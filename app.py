@@ -5,7 +5,6 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# La clave se lee de las variables de entorno
 API_KEY = os.environ.get("GOOGLE_API_KEY")
 
 @app.route('/')
@@ -16,10 +15,47 @@ def home():
 def health():
     return {"status": "ok"}
 
+@app.route('/models', methods=['GET'])
+def list_models():
+    """Endpoint que lista los modelos disponibles en tu cuenta"""
+    if not API_KEY:
+        return jsonify({"error": "Clave API no configurada"}), 500
+    
+    try:
+        # Consulta a la API de Google para listar modelos
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={API_KEY}"
+        response = requests.get(url)
+        
+        if response.status_code != 200:
+            return jsonify({
+                "error": "Error al obtener modelos",
+                "code": response.status_code,
+                "details": response.json() if response.text else "Sin detalles"
+            }), response.status_code
+        
+        data = response.json()
+        modelos = []
+        
+        # Filtramos solo los que soportan generateContent
+        for model in data.get('models', []):
+            if 'generateContent' in model.get('supportedActions', []):
+                modelos.append({
+                    "name": model.get('name'),
+                    "displayName": model.get('displayName'),
+                    "description": model.get('description', '')[:100]
+                })
+        
+        return jsonify({
+            "total": len(modelos),
+            "models": modelos
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/ask', methods=['POST'])
 def ask():
     try:
-        # Obtener la pregunta
         data = request.get_json()
         if not data or 'pregunta' not in data:
             return jsonify({"error": "Falta la pregunta"}), 400
@@ -28,14 +64,13 @@ def ask():
         print(f"📩 Pregunta recibida: {pregunta}")
         
         if not API_KEY:
-            print("❌ ERROR: La clave API no está configurada")
             return jsonify({"error": "Clave API no configurada"}), 500
 
-        # ✅ MODELO CORRECTO (ACTIVO Y ESTABLE)
-        # Gemini 2.5 Flash es el modelo recomendado actualmente
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={API_KEY}"
+        # ⚠️ IMPORTANTE: CAMBIA ESTE MODELO POR EL QUE TE APAREZCA EN /models
+        # Por ahora usamos gemini-3.5-flash como ejemplo
+        MODELO = "gemini-3.5-flash"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODELO}:generateContent?key={API_KEY}"
         
-        # ✅ PAYLOAD CORRECTO
         payload = {
             "contents": [
                 {
@@ -47,11 +82,10 @@ def ask():
         
         headers = {"Content-Type": "application/json"}
         
-        print(f"📤 Enviando a Gemini...")
+        print(f"📤 Enviando a Gemini con modelo: {MODELO}")
         response = requests.post(url, headers=headers, json=payload)
         print(f"📥 Código de respuesta: {response.status_code}")
         
-        # ✅ MANEJO DE ERRORES
         if response.status_code != 200:
             print(f"❌ Error de Gemini: {response.text}")
             return jsonify({
@@ -61,9 +95,7 @@ def ask():
             }), response.status_code
         
         resultado = response.json()
-        print(f"📥 Respuesta: {json.dumps(resultado, indent=2)}")
         
-        # ✅ ACCESO SEGURO A LA RESPUESTA
         if "candidates" in resultado and len(resultado["candidates"]) > 0:
             candidate = resultado["candidates"][0]
             if "content" in candidate and "parts" in candidate["content"]:
@@ -72,14 +104,8 @@ def ask():
         
         return jsonify({"error": "No se pudo obtener una respuesta válida"}), 500
         
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Error de red: {e}")
-        return jsonify({"error": f"Error de conexión: {str(e)}"}), 500
-    except json.JSONDecodeError as e:
-        print(f"❌ Error al decodificar JSON: {e}")
-        return jsonify({"error": "Error al procesar la respuesta de Gemini"}), 500
     except Exception as e:
-        print(f"❌ ERROR INESPERADO: {e}")
+        print(f"❌ ERROR: {e}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
