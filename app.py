@@ -63,6 +63,7 @@ def guardar_historial():
 
 def llamar_gemini(pregunta):
     """Llama a la API de Gemini y devuelve la respuesta"""
+    print(f"📤 Llamando a Gemini con: {pregunta[:50]}...")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {
@@ -76,7 +77,9 @@ def llamar_gemini(pregunta):
         response = requests.post(url, headers=headers, json=payload, timeout=30)
         response.raise_for_status()
         resultado = response.json()
-        return resultado["candidates"][0]["content"]["parts"][0]["text"]
+        respuesta = resultado["candidates"][0]["content"]["parts"][0]["text"]
+        print(f"✅ Gemini respondió: {respuesta[:50]}...")
+        return respuesta
     except Exception as e:
         print(f"❌ Error al llamar a Gemini: {e}")
         raise
@@ -178,6 +181,7 @@ def aprender_y_mejorar():
     Si hay tareas pendientes, usa la primera como objetivo.
     Si no, aprende libremente.
     """
+    print("🧠 Entrando en aprender_y_mejorar()...")
     print("🧠 Iniciando ciclo de aprendizaje...")
     
     # 1. Verificar si hay tareas pendientes
@@ -241,22 +245,27 @@ def aprender_y_mejorar():
 # ============================================
 
 def bucle_aprendizaje():
+    print("🔄 Bucle de aprendizaje iniciado. Esperando primer ciclo...")
     while True:
-        inicio_ciclo = time.time()
-        
-        aprender_y_mejorar()
-        
-        # Ping interno
         try:
-            requests.get(f"http://localhost:{os.environ.get('PORT', 10000)}/health", timeout=5)
-            print("🔋 Ping de mantenimiento enviado")
+            inicio_ciclo = time.time()
+            
+            aprender_y_mejorar()
+            
+            # Ping interno
+            try:
+                requests.get(f"http://localhost:{os.environ.get('PORT', 10000)}/health", timeout=5)
+                print("🔋 Ping de mantenimiento enviado")
+            except Exception as e:
+                print(f"❌ Error en ping interno: {e}")
+            
+            tiempo_ejecucion = time.time() - inicio_ciclo
+            tiempo_espera = max(0, INTERVALO_APRENDIZAJE - tiempo_ejecucion)
+            print(f"⏳ Próximo ciclo en {tiempo_espera:.0f} segundos")
+            time.sleep(tiempo_espera)
         except Exception as e:
-            print(f"❌ Error en ping interno: {e}")
-        
-        tiempo_ejecucion = time.time() - inicio_ciclo
-        tiempo_espera = max(0, INTERVALO_APRENDIZAJE - tiempo_ejecucion)
-        print(f"⏳ Próximo ciclo en {tiempo_espera:.0f} segundos")
-        time.sleep(tiempo_espera)
+            print(f"❌ Error crítico en bucle_aprendizaje: {e}")
+            time.sleep(60)  # Espera 1 minuto antes de reintentar
 
 # ============================================
 # ENDPOINTS DE LA API
@@ -297,6 +306,7 @@ def ask():
 @app.route('/aprender', methods=['POST'])
 def aprender_manual():
     """Inicia el ciclo de aprendizaje en segundo plano"""
+    print("🔧 Endpoint /aprender llamado manualmente")
     thread = threading.Thread(target=aprender_y_mejorar)
     thread.daemon = True
     thread.start()
@@ -359,6 +369,11 @@ def estado_sistema():
 # ============================================
 
 if __name__ == "__main__":
-    threading.Thread(target=bucle_aprendizaje, daemon=True).start()
+    print("🚀 Iniciando asistente con bucle de aprendizaje...")
+    # Lanzar el bucle de aprendizaje en segundo plano
+    thread_bucle = threading.Thread(target=bucle_aprendizaje, daemon=True)
+    thread_bucle.start()
+    print("✅ Bucle de aprendizaje lanzado en segundo plano.")
+    
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
