@@ -31,11 +31,10 @@ def ask():
             print("❌ ERROR: La clave API no está configurada")
             return jsonify({"error": "Clave API no configurada"}), 500
 
-        # ✅ NUEVA ESTRUCTURA DE PETICIÓN
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={API_KEY}"
-        headers = {"Content-Type": "application/json"}
+        # ✅ CONSTRUCCIÓN CORRECTA DE LA URL
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={API_KEY}"
         
-        # ✅ FORMATO CORRECTO SEGÚN DOCUMENTACIÓN
+        # ✅ PAYLOAD CORRECTO (con "role" y "parts")
         payload = {
             "contents": [
                 {
@@ -45,11 +44,13 @@ def ask():
             ]
         }
         
+        headers = {"Content-Type": "application/json"}
+        
         print(f"📤 Enviando a Gemini...")
         response = requests.post(url, headers=headers, json=payload)
         print(f"📥 Código de respuesta: {response.status_code}")
         
-        # ✅ MANEJO DE ERRORES MÁS DETALLADO
+        # ✅ MANEJO DETALLADO DE ERRORES
         if response.status_code != 200:
             print(f"❌ Error de Gemini: {response.text}")
             return jsonify({
