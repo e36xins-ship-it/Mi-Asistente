@@ -29,8 +29,8 @@ def ask():
             print("❌ ERROR: La clave API no está configurada")
             return jsonify({"error": "Clave API no configurada"}), 500
 
-        # ✅ MODELO CORRECTO (según tu panel de límites)
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={API_KEY}"
+        # ✅ MODELO ESTABLE Y GRATUITO
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={API_KEY}"
         headers = {"Content-Type": "application/json"}
         payload = {
             "contents": [{
