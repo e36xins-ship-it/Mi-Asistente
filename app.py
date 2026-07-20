@@ -32,7 +32,7 @@ def ask():
             return jsonify({"error": "Clave API no configurada"}), 500
 
         # ✅ Usamos el modelo que SÍ funciona: gemini-2.0-flash
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={API_KEY}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={API_KEY}"
         headers = {"Content-Type": "application/json"}
         payload = {
             "contents": [{
