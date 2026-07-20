@@ -5,6 +5,7 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
+# La clave se lee de las variables de entorno
 API_KEY = os.environ.get("GOOGLE_API_KEY")
 
 @app.route('/')
@@ -18,6 +19,7 @@ def health():
 @app.route('/ask', methods=['POST'])
 def ask():
     try:
+        # Obtener la pregunta
         data = request.get_json()
         if not data or 'pregunta' not in data:
             return jsonify({"error": "Falta la pregunta"}), 400
@@ -29,31 +31,54 @@ def ask():
             print("❌ ERROR: La clave API no está configurada")
             return jsonify({"error": "Clave API no configurada"}), 500
 
-        # ✅ MODELO ESTABLE Y GRATUITO
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={API_KEY}"
+        # ✅ NUEVA ESTRUCTURA DE PETICIÓN
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={API_KEY}"
         headers = {"Content-Type": "application/json"}
+        
+        # ✅ FORMATO CORRECTO SEGÚN DOCUMENTACIÓN
         payload = {
-            "contents": [{
-                "parts": [{"text": pregunta}]
-            }]
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": pregunta}]
+                }
+            ]
         }
         
         print(f"📤 Enviando a Gemini...")
         response = requests.post(url, headers=headers, json=payload)
         print(f"📥 Código de respuesta: {response.status_code}")
         
-        if response.status_code == 429:
-            print("⚠️ Límite de peticiones alcanzado. Espera unos segundos.")
-            return jsonify({"error": "Límite de peticiones alcanzado"}), 429
+        # ✅ MANEJO DE ERRORES MÁS DETALLADO
+        if response.status_code != 200:
+            print(f"❌ Error de Gemini: {response.text}")
+            return jsonify({
+                "error": "Error en la API de Gemini",
+                "code": response.status_code,
+                "details": response.json() if response.text else "Sin detalles"
+            }), response.status_code
         
-        response.raise_for_status()
         resultado = response.json()
-        respuesta = resultado["candidates"][0]["content"]["parts"][0]["text"]
+        print(f"📥 Respuesta completa: {json.dumps(resultado, indent=2)}")
         
-        return jsonify({"respuesta": respuesta})
+        # ✅ ACCESO SEGURO A LA RESPUESTA
+        if "candidates" in resultado and len(resultado["candidates"]) > 0:
+            candidate = resultado["candidates"][0]
+            if "content" in candidate and "parts" in candidate["content"]:
+                respuesta = candidate["content"]["parts"][0]["text"]
+                return jsonify({"respuesta": respuesta})
         
+        return jsonify({"error": "No se pudo obtener una respuesta válida"}), 500
+        
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Error de red: {e}")
+        return jsonify({"error": f"Error de conexión: {str(e)}"}), 500
+    except json.JSONDecodeError as e:
+        print(f"❌ Error al decodificar JSON: {e}")
+        print(f"📥 Respuesta cruda: {response.text[:200]}")
+        return jsonify({"error": "Error al procesar la respuesta de Gemini"}), 500
     except Exception as e:
-        print(f"❌ ERROR: {e}")
+        print(f"❌ ERROR INESPERADO: {e}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
