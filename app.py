@@ -5,6 +5,7 @@ import time
 import threading
 import ast
 import shutil
+import re
 from datetime import datetime
 from flask import Flask, request, jsonify
 
@@ -44,13 +45,17 @@ def llamar_gemini(pregunta):
         }]
     }
     
-    response = requests.post(url, headers=headers, json=payload)
-    response.raise_for_status()
-    resultado = response.json()
-    return resultado["candidates"][0]["content"]["parts"][0]["text"]
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        resultado = response.json()
+        return resultado["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception as e:
+        print(f"❌ Error al llamar a Gemini: {e}")
+        raise
 
 # ============================================
-# FUNCIONES DE VALIDACIÓN Y APLICACIÓN
+# FUNCIONES DE VALIDACIÓN Y APLICACIÓN DE MEJORAS
 # ============================================
 
 def validar_codigo(codigo):
@@ -72,7 +77,6 @@ def aplicar_mejora(archivo_mejora):
             contenido = f.read()
         
         # Buscar el bloque de código Python (entre ```python y ```)
-        import re
         patron = r"```python\n(.*?)```"
         match = re.search(patron, contenido, re.DOTALL)
         
@@ -91,7 +95,9 @@ def aplicar_mejora(archivo_mejora):
         # Crear backup del app.py actual
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_path = os.path.join(CARPETA_BACKUPS, f"app_backup_{timestamp}.py")
-        shutil.copy2(__file__, backup_path)
+        with open(__file__, "r") as f_actual:
+            with open(backup_path, "w") as f_backup:
+                f_backup.write(f_actual.read())
         print(f"📦 Backup guardado en {backup_path}")
         
         # Aplicar el nuevo código (sobrescribir app.py)
@@ -119,7 +125,7 @@ def aplicar_mejora(archivo_mejora):
         return False, str(e)
 
 # ============================================
-# CICLO DE APRENDIZAJE (con auto-aplicación)
+# CICLO DE APRENDIZAJE (CON AUTOAPLICACIÓN)
 # ============================================
 
 def aprender_y_mejorar():
@@ -171,7 +177,7 @@ def aprender_y_mejorar():
         return False
 
 # ============================================
-# BUCLE PRINCIPAL DE MANTENIMIENTO
+# BUCLE DE MANTENIMIENTO Y APRENDIZAJE (KEEP-ALIVE)
 # ============================================
 
 def bucle_aprendizaje():
@@ -187,7 +193,7 @@ def bucle_aprendizaje():
         
         # Ping interno para mantener vivo el servicio
         try:
-            requests.get(f"http://localhost:{os.environ.get('PORT', 10000)}/health")
+            requests.get(f"http://localhost:{os.environ.get('PORT', 10000)}/health", timeout=5)
             print("🔋 Ping de mantenimiento enviado")
         except Exception as e:
             print(f"❌ Error en ping interno: {e}")
@@ -231,20 +237,24 @@ def ask():
         return jsonify({"respuesta": respuesta})
         
     except Exception as e:
-        print(f"❌ ERROR: {e}")
+        print(f"❌ ERROR en /ask: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/aprender', methods=['POST'])
 def aprender_manual():
-    """Endpoint para activar el aprendizaje bajo demanda."""
-    try:
-        resultado = aprender_y_mejorar()
-        if resultado:
-            return jsonify({"status": "ok", "message": "Ciclo de aprendizaje iniciado y aplicado"})
-        else:
-            return jsonify({"status": "error", "message": "Error en el aprendizaje"}), 500
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    """
+    Endpoint para activar el aprendizaje bajo demanda (en segundo plano).
+    Devuelve una respuesta inmediata para evitar timeouts.
+    """
+    # Iniciar el ciclo de aprendizaje en un hilo separado
+    thread = threading.Thread(target=aprender_y_mejorar)
+    thread.daemon = True
+    thread.start()
+    
+    return jsonify({
+        "status": "ok", 
+        "message": "Ciclo de aprendizaje iniciado en segundo plano. Revisa los logs para ver el progreso."
+    })
 
 # ============================================
 # INICIO DEL SERVICIO
