@@ -1,113 +1,133 @@
-import os
-import requests
+import threading
+import time
 import json
-from flask import Flask, request, jsonify
+import os
+from datetime import datetime
 
-app = Flask(__name__)
+# ============================================
+# CONFIGURACIÓN DE APRENDIZAJE CONTINUO
+# ============================================
 
-API_KEY = os.environ.get("GOOGLE_API_KEY")
+INTERVALO_APRENDIZAJE = 600  # 10 minutos (en segundos)
+ARCHIVO_HISTORIAL = "aprendizaje.json"
 
-@app.route('/')
-def home():
-    return "🤖 Asistente Gemini está vivo y funcionando!"
+# Cargar historial de mejoras previas
+try:
+    with open(ARCHIVO_HISTORIAL, "r") as f:
+        historial_mejoras = json.load(f)
+except FileNotFoundError:
+    historial_mejoras = []
 
-@app.route('/health')
-def health():
-    return {"status": "ok"}
+# ============================================
+# FUNCIÓN DE APRENDIZAJE (el corazón del sistema)
+# ============================================
 
-@app.route('/models', methods=['GET'])
-def list_models():
-    """Endpoint que lista los modelos disponibles en tu cuenta"""
-    if not API_KEY:
-        return jsonify({"error": "Clave API no configurada"}), 500
+def aprender_y_mejorar():
+    """
+    Esta función se ejecuta automáticamente cada INTERVALO_APRENDIZAJE.
+    1. Pide a Gemini que sugiera una mejora concreta.
+    2. Evalúa si es viable.
+    3. Si es viable, la aplica (o la guarda para aprobación).
+    4. Registra la mejora para no repetirla.
+    """
+    print("🧠 Iniciando ciclo de aprendizaje...")
+    
+    # 1. Generar una idea de mejora basada en el contexto
+    prompt_contexto = f"""
+    Eres el asistente Aether, un sistema autónomo que se mejora a sí mismo.
+    Ya has implementado estas mejoras anteriormente:
+    {json.dumps(historial_mejoras[-5:], indent=2)}
+    
+    Tu objetivo es sugerir UNA MEJORA NUEVA Y CONCRETA para tu propio código.
+    La mejora debe ser:
+    - Pequeña y aplicable (no reescribir todo).
+    - Que añada una nueva funcionalidad útil.
+    - Que no rompa el sistema actual.
+    
+    Responde ÚNICAMENTE con:
+    1. Título de la mejora.
+    2. Código Python completo que se debe añadir o modificar (si aplica).
+    3. Explicación de por qué es útil.
+    """
     
     try:
-        # Consulta a la API de Google para listar modelos
-        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={API_KEY}"
-        response = requests.get(url)
+        respuesta = llamar_gemini(prompt_contexto)
+        print(f"💡 Idea generada: {respuesta[:200]}...")
         
-        if response.status_code != 200:
-            return jsonify({
-                "error": "Error al obtener modelos",
-                "code": response.status_code,
-                "details": response.json() if response.text else "Sin detalles"
-            }), response.status_code
+        # 2. Guardar la mejora en un archivo temporal para revisión
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        with open(f"mejora_{timestamp}.txt", "w") as f:
+            f.write(respuesta)
         
-        data = response.json()
-        modelos = []
-        
-        # Filtramos solo los que soportan generateContent
-        for model in data.get('models', []):
-            if 'generateContent' in model.get('supportedActions', []):
-                modelos.append({
-                    "name": model.get('name'),
-                    "displayName": model.get('displayName'),
-                    "description": model.get('description', '')[:100]
-                })
-        
-        return jsonify({
-            "total": len(modelos),
-            "models": modelos
+        # 3. Registrar la mejora en el historial
+        historial_mejoras.append({
+            "timestamp": timestamp,
+            "mejora": respuesta[:500]  # Guardamos un resumen
         })
+        with open(ARCHIVO_HISTORIAL, "w") as f:
+            json.dump(historial_mejoras[-50:], f, indent=2)  # Guardamos las últimas 50
+        
+        print(f"✅ Mejora guardada en mejora_{timestamp}.txt")
+        return True
         
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print(f"❌ Error en ciclo de aprendizaje: {e}")
+        return False
 
-@app.route('/ask', methods=['POST'])
-def ask():
+# ============================================
+# BUCLE DE MANTENIMIENTO Y APRENDIZAJE
+# ============================================
+
+def bucle_aprendizaje():
+    """
+    Bucle que se ejecuta en un hilo separado.
+    Cada INTERVALO_APRENDIZAJE, ejecuta aprender_y_mejorar()
+    Además, responde a un "ping" interno para mantener vivo el servicio.
+    """
+    while True:
+        inicio_ciclo = time.time()
+        
+        # 1. Autoaprendizaje
+        aprender_y_mejorar()
+        
+        # 2. Mantener vivo el servicio (ping interno)
+        try:
+            requests.get(f"http://localhost:{os.environ.get('PORT', 10000)}/health")
+            print("🔋 Ping de mantenimiento enviado")
+        except Exception as e:
+            print(f"❌ Error en ping interno: {e}")
+        
+        # 3. Calcular tiempo de espera hasta el próximo ciclo
+        tiempo_ejecucion = time.time() - inicio_ciclo
+        tiempo_espera = max(0, INTERVALO_APRENDIZAJE - tiempo_ejecucion)
+        print(f"⏳ Próximo ciclo en {tiempo_espera:.0f} segundos")
+        time.sleep(tiempo_espera)
+
+# ============================================
+# ENDPOINT PARA EJECUTAR APRENDIZAJE MANUAL
+# ============================================
+
+@app.route('/aprender', methods=['POST'])
+def aprender_manual():
+    """
+    Endpoint para activar el aprendizaje bajo demanda.
+    Útil para probar o forzar una mejora.
+    """
     try:
-        data = request.get_json()
-        if not data or 'pregunta' not in data:
-            return jsonify({"error": "Falta la pregunta"}), 400
-        
-        pregunta = data['pregunta']
-        print(f"📩 Pregunta recibida: {pregunta}")
-        
-        if not API_KEY:
-            return jsonify({"error": "Clave API no configurada"}), 500
-
-        # ⚠️ IMPORTANTE: CAMBIA ESTE MODELO POR EL QUE TE APAREZCA EN /models
-        # Por ahora usamos gemini-3.5-flash como ejemplo
-        MODELO = "gemini-3.5-flash"
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODELO}:generateContent?key={API_KEY}"
-        
-        payload = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [{"text": pregunta}]
-                }
-            ]
-        }
-        
-        headers = {"Content-Type": "application/json"}
-        
-        print(f"📤 Enviando a Gemini con modelo: {MODELO}")
-        response = requests.post(url, headers=headers, json=payload)
-        print(f"📥 Código de respuesta: {response.status_code}")
-        
-        if response.status_code != 200:
-            print(f"❌ Error de Gemini: {response.text}")
-            return jsonify({
-                "error": "Error en la API de Gemini",
-                "code": response.status_code,
-                "details": response.json() if response.text else "Sin detalles"
-            }), response.status_code
-        
-        resultado = response.json()
-        
-        if "candidates" in resultado and len(resultado["candidates"]) > 0:
-            candidate = resultado["candidates"][0]
-            if "content" in candidate and "parts" in candidate["content"]:
-                respuesta = candidate["content"]["parts"][0]["text"]
-                return jsonify({"respuesta": respuesta})
-        
-        return jsonify({"error": "No se pudo obtener una respuesta válida"}), 500
-        
+        resultado = aprender_y_mejorar()
+        if resultado:
+            return jsonify({"status": "ok", "message": "Ciclo de aprendizaje iniciado"})
+        else:
+            return jsonify({"status": "error", "message": "Error en el aprendizaje"}), 500
     except Exception as e:
-        print(f"❌ ERROR: {e}")
         return jsonify({"error": str(e)}), 500
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+# ============================================
+# INICIAR EL BUCLE DE APRENDIZAJE EN SEGUNDO PLANO
+# ============================================
+
+# Al iniciar el servicio, lanzar el bucle en un hilo
+threading.Thread(target=bucle_aprendizaje, daemon=True).start()
+
+# También iniciar el keep-alive básico (por si acaso)
+threading.Thread(target=keep_alive, daemon=True).start()
