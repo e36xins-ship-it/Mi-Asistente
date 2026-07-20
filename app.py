@@ -5,7 +5,6 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# La clave se lee de las variables de entorno
 API_KEY = os.environ.get("GOOGLE_API_KEY")
 
 @app.route('/')
@@ -19,7 +18,6 @@ def health():
 @app.route('/ask', methods=['POST'])
 def ask():
     try:
-        # Obtener la pregunta
         data = request.get_json()
         if not data or 'pregunta' not in data:
             return jsonify({"error": "Falta la pregunta"}), 400
@@ -31,7 +29,7 @@ def ask():
             print("❌ ERROR: La clave API no está configurada")
             return jsonify({"error": "Clave API no configurada"}), 500
 
-        # ✅ Usamos el modelo que SÍ funciona: gemini-2.0-flash
+        # ✅ MODELO CORRECTO (según tu panel de límites)
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={API_KEY}"
         headers = {"Content-Type": "application/json"}
         payload = {
@@ -46,7 +44,7 @@ def ask():
         
         if response.status_code == 429:
             print("⚠️ Límite de peticiones alcanzado. Espera unos segundos.")
-            return jsonify({"error": "Límite de peticiones alcanzado. Intenta de nuevo en unos segundos."}), 429
+            return jsonify({"error": "Límite de peticiones alcanzado"}), 429
         
         response.raise_for_status()
         resultado = response.json()
@@ -61,3 +59,4 @@ def ask():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+     
