@@ -5,3 +5,5 @@ openai
 anthropic
 gitpython
 numpy
+
+scikit-learn
