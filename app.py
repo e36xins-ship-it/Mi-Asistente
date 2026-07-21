@@ -1,38 +1,13 @@
-@app.route('/debug_repo', methods=['GET'])
-def debug_repo():
-    import subprocess
-    repo_path = os.path.join(os.getcwd(), REPO_DIR)
-    result = {
-        "repo_path": repo_path,
-        "exists": os.path.exists(repo_path),
-        "is_git": os.path.exists(os.path.join(repo_path, ".git")),
-        "git_remote": "",
-        "git_status": "",
-        "git_log": "",
-        "app_py_exists": os.path.exists(os.path.join(repo_path, "app.py")),
-        "requirements_exists": os.path.exists(os.path.join(repo_path, "requirements.txt")),
-    }
-    try:
-        remote = subprocess.run(["git", "-C", repo_path, "remote", "-v"], capture_output=True, text=True, timeout=5)
-        result["git_remote"] = remote.stdout
-    except Exception as e:
-        result["git_remote_error"] = str(e)
-    try:
-        status = subprocess.run(["git", "-C", repo_path, "status", "--porcelain"], capture_output=True, text=True, timeout=5)
-        result["git_status"] = status.stdout
-    except Exception as e:
-        result["git_status_error"] = str(e)
-    try:
-        log = subprocess.run(["git", "-C", repo_path, "log", "--oneline", "-n", "5"], capture_output=True, text=True, timeout=5)
-        result["git_log"] = log.stdout
-    except Exception as e:
-        result["git_log_error"] = str(e)
-    return jsonify(result)
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Aether — Asistente Autónomo con Auto-mejora Persistente
-Versión: 4.2 (Completa y funcional)
+Versión: 4.3 (Definitiva)
+- Endpoint /debug_repo para diagnóstico
+- git_commit_and_push() reescrita con verificación de push
+- Copia de múltiples archivos (app.py, requirements.txt, README.md)
+- git add . para incluir todos los cambios
+- Logs detallados de cada paso
 """
 
 import os
@@ -691,7 +666,7 @@ def self_ping():
             print(f"⚠️ Auto-ping falló: {e}", file=sys.stderr)
 
 # ============================================================
-# GIT AUTOMÁTICO (REESCRITO CON SUBPROCESS)
+# GIT AUTOMÁTICO (REESCRITO CON SUBPROCESS Y VERIFICACIÓN)
 # ============================================================
 
 def git_inicializar():
@@ -736,18 +711,23 @@ def git_commit_and_push():
         print(f"❌ Error configurando usuario: {e}", file=sys.stderr)
         return False
 
-    # Copiar app.py
-    try:
-        shutil.copy2(__file__, os.path.join(repo_path, "app.py"))
-        print(f"📁 app.py copiado a {repo_path}", file=sys.stderr)
-    except Exception as e:
-        print(f"❌ Error copiando app.py: {e}", file=sys.stderr)
-        return False
+    # Copiar TODOS los archivos que podrían haber cambiado
+    archivos_a_copiar = ["app.py", "requirements.txt", "README.md"]
+    for archivo in archivos_a_copiar:
+        src = os.path.join(os.getcwd(), archivo)
+        dst = os.path.join(repo_path, archivo)
+        if os.path.exists(src):
+            try:
+                shutil.copy2(src, dst)
+                print(f"📁 {archivo} copiado", file=sys.stderr)
+            except Exception as e:
+                print(f"❌ Error copiando {archivo}: {e}", file=sys.stderr)
+                return False
 
-    # git add
+    # git add .
     try:
-        subprocess.run(["git", "-C", repo_path, "add", "app.py"], check=True, capture_output=True)
-        print("✅ git add app.py", file=sys.stderr)
+        subprocess.run(["git", "-C", repo_path, "add", "."], check=True, capture_output=True)
+        print("✅ git add .", file=sys.stderr)
     except Exception as e:
         print(f"❌ git add falló: {e}", file=sys.stderr)
         return False
@@ -758,7 +738,7 @@ def git_commit_and_push():
         if not result.stdout.strip():
             print("ℹ️ No hay cambios para commitear", file=sys.stderr)
             return True
-        print(f"📊 git status: {result.stdout.strip()}", file=sys.stderr)
+        print(f"📊 git status:\n{result.stdout}", file=sys.stderr)
     except Exception as e:
         print(f"❌ git status falló: {e}", file=sys.stderr)
         return False
@@ -772,21 +752,74 @@ def git_commit_and_push():
         print(f"❌ git commit falló: {e}", file=sys.stderr)
         return False
 
-    # git push (con force si falla)
+    # --- VERIFICACIÓN Y PUSH ROBUSTO ---
+    print("📤 Intentando git push...", file=sys.stderr)
     try:
-        subprocess.run(["git", "-C", repo_path, "push", "--set-upstream", "origin", "main"], check=False, capture_output=True)
-        subprocess.run(["git", "-C", repo_path, "push"], check=True, capture_output=True)
-        print("✅ git push", file=sys.stderr)
-        return True
-    except Exception as e:
-        print(f"⚠️ git push falló: {e}. Intentando --force...", file=sys.stderr)
-        try:
-            subprocess.run(["git", "-C", repo_path, "push", "--force"], check=True, capture_output=True)
-            print("✅ git push --force", file=sys.stderr)
+        # Verificar que la URL remota es correcta y contiene el token
+        remote_url = subprocess.run(["git", "-C", repo_path, "remote", "get-url", "origin"], capture_output=True, text=True, timeout=5)
+        print(f"🔗 Remote URL (oculta): {remote_url.stdout[:30]}...", file=sys.stderr)
+
+        # Intento de push principal
+        push_result = subprocess.run(["git", "-C", repo_path, "push"], capture_output=True, text=True, timeout=30)
+        
+        if push_result.returncode == 0:
+            print("✅ git push exitoso", file=sys.stderr)
             return True
-        except Exception as e2:
-            print(f"❌ git push --force falló: {e2}", file=sys.stderr)
-            return False
+        else:
+            # Si falla, mostramos el error y lo registramos
+            print(f"❌ git push falló con código {push_result.returncode}", file=sys.stderr)
+            print(f"❌ stderr: {push_result.stderr}", file=sys.stderr)
+            
+            # Intentar con --force como último recurso
+            print("⚠️ Intentando git push --force...", file=sys.stderr)
+            force_result = subprocess.run(["git", "-C", repo_path, "push", "--force"], capture_output=True, text=True, timeout=30)
+            if force_result.returncode == 0:
+                print("✅ git push --force exitoso", file=sys.stderr)
+                return True
+            else:
+                print(f"❌ git push --force falló: {force_result.stderr}", file=sys.stderr)
+                return False
+                
+    except subprocess.TimeoutExpired:
+        print("❌ git push: Tiempo de espera agotado", file=sys.stderr)
+        return False
+    except Exception as e:
+        print(f"❌ Error en git push: {e}", file=sys.stderr)
+        return False
+
+# ============================================================
+# ENDPOINT DE DIAGNÓSTICO DEL REPOSITORIO
+# ============================================================
+
+@app.route('/debug_repo', methods=['GET'])
+def debug_repo():
+    repo_path = os.path.join(os.getcwd(), REPO_DIR)
+    result = {
+        "repo_path": repo_path,
+        "exists": os.path.exists(repo_path),
+        "is_git": os.path.exists(os.path.join(repo_path, ".git")),
+        "git_remote": "",
+        "git_status": "",
+        "git_log": "",
+        "app_py_exists": os.path.exists(os.path.join(repo_path, "app.py")),
+        "requirements_exists": os.path.exists(os.path.join(repo_path, "requirements.txt")),
+    }
+    try:
+        remote = subprocess.run(["git", "-C", repo_path, "remote", "-v"], capture_output=True, text=True, timeout=5)
+        result["git_remote"] = remote.stdout
+    except Exception as e:
+        result["git_remote_error"] = str(e)
+    try:
+        status = subprocess.run(["git", "-C", repo_path, "status", "--porcelain"], capture_output=True, text=True, timeout=5)
+        result["git_status"] = status.stdout
+    except Exception as e:
+        result["git_status_error"] = str(e)
+    try:
+        log = subprocess.run(["git", "-C", repo_path, "log", "--oneline", "-n", "5"], capture_output=True, text=True, timeout=5)
+        result["git_log"] = log.stdout
+    except Exception as e:
+        result["git_log_error"] = str(e)
+    return jsonify(result)
 
 # ============================================================
 # ENDPOINTS DE LA API
@@ -794,7 +827,7 @@ def git_commit_and_push():
 
 @app.route('/')
 def home():
-    return "🤖 Aether — Asistente Autónomo v4.2"
+    return "🤖 Aether — Asistente Autónomo v4.3"
 
 @app.route('/health')
 def health():
@@ -976,7 +1009,7 @@ def git_manual():
 # ============================================================
 
 if __name__ == "__main__":
-    print("🚀 Iniciando Aether v4.2", file=sys.stderr)
+    print("🚀 Iniciando Aether v4.3", file=sys.stderr)
     if GITHUB_TOKEN and GITHUB_REPO_URL:
         git_inicializar()
     else:
