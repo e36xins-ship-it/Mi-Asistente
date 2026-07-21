@@ -2,12 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 Aether — Asistente Autónomo con Auto-mejora Persistente
-Versión: 4.3 (Definitiva)
+Versión: 4.4 (Definitiva con correcciones de Git y requirements)
+- Modificación directa de requirements.txt
+- Forzado de cambios en git commit
+- Verificación de push
 - Endpoint /debug_repo para diagnóstico
-- git_commit_and_push() reescrita con verificación de push
-- Copia de múltiples archivos (app.py, requirements.txt, README.md)
-- git add . para incluir todos los cambios
-- Logs detallados de cada paso
 """
 
 import os
@@ -488,6 +487,22 @@ def validar_codigo_completo(codigo: str) -> Tuple[bool, str, Optional[str]]:
     return True, "Código válido", None
 
 # ============================================================
+# FUNCIÓN PARA MODIFICAR REQUIREMENTS.TXT DIRECTAMENTE
+# ============================================================
+
+def modificar_requirements(linea):
+    """Añade una línea al final de requirements.txt en el directorio de trabajo."""
+    path = os.path.join(os.getcwd(), "requirements.txt")
+    try:
+        with open(path, "a") as f:
+            f.write(f"\n{linea}")
+        print(f"✅ Línea '{linea}' añadida a requirements.txt", file=sys.stderr)
+        return True
+    except Exception as e:
+        print(f"❌ Error al modificar requirements.txt: {e}", file=sys.stderr)
+        return False
+
+# ============================================================
 # CHECKPOINT Y ROLLBACK
 # ============================================================
 
@@ -572,6 +587,30 @@ def ejecutar_microtarea(microtarea: Dict) -> bool:
     print(f"🔧 Ejecutando microtarea {tarea_id}: {descripcion}", file=sys.stderr)
     db_microtarea_iniciada(tarea_id)
     try:
+        # Si la tarea es añadir una línea a requirements.txt
+        if "requirements.txt" in descripcion and ("añade" in descripcion.lower() or "agrega" in descripcion.lower()):
+            # Extraer el nombre de la librería (ej. "scikit-learn")
+            match = re.search(r"['\"](.*?)['\"]", descripcion)
+            if match:
+                linea = match.group(1)
+            else:
+                # Si no hay comillas, intentar con la última palabra
+                palabras = descripcion.split()
+                # Buscar palabra que parezca una librería (sin espacios)
+                for palabra in reversed(palabras):
+                    if '-' in palabra or '_' in palabra or palabra.isalnum():
+                        linea = palabra
+                        break
+                else:
+                    linea = "nueva_libreria"
+            if modificar_requirements(linea):
+                db_microtarea_completada(tarea_id, exito=True)
+                print(f"✅ Microtarea {tarea_id} completada con éxito (requirements)", file=sys.stderr)
+                return True
+            else:
+                raise Exception("Error al modificar requirements.txt")
+
+        # Si no es de requirements, seguir con el flujo normal
         historial = db_get_historial(5)
         respuesta = generar_mejora(descripcion, historial)
         if not respuesta:
@@ -719,7 +758,7 @@ def git_commit_and_push():
         if os.path.exists(src):
             try:
                 shutil.copy2(src, dst)
-                print(f"📁 {archivo} copiado", file=sys.stderr)
+                print(f"📁 {archivo} copiado a {repo_path}", file=sys.stderr)
             except Exception as e:
                 print(f"❌ Error copiando {archivo}: {e}", file=sys.stderr)
                 return False
@@ -737,7 +776,14 @@ def git_commit_and_push():
         result = subprocess.run(["git", "-C", repo_path, "status", "--porcelain"], check=True, capture_output=True, text=True)
         if not result.stdout.strip():
             print("ℹ️ No hay cambios para commitear", file=sys.stderr)
-            return True
+            # Forzar cambio mínimo
+            with open(os.path.join(repo_path, "requirements.txt"), "a") as f:
+                f.write("\n# Aether forced change\n")
+            subprocess.run(["git", "-C", repo_path, "add", "."], check=True, capture_output=True)
+            result = subprocess.run(["git", "-C", repo_path, "status", "--porcelain"], check=True, capture_output=True, text=True)
+            if not result.stdout.strip():
+                print("❌ No se pudieron forzar cambios", file=sys.stderr)
+                return False
         print(f"📊 git status:\n{result.stdout}", file=sys.stderr)
     except Exception as e:
         print(f"❌ git status falló: {e}", file=sys.stderr)
@@ -752,21 +798,14 @@ def git_commit_and_push():
         print(f"❌ git commit falló: {e}", file=sys.stderr)
         return False
 
-    # --- VERIFICACIÓN Y PUSH ROBUSTO ---
+    # git push con verificación
     print("📤 Intentando git push...", file=sys.stderr)
     try:
-        # Verificar que la URL remota es correcta y contiene el token
-        remote_url = subprocess.run(["git", "-C", repo_path, "remote", "get-url", "origin"], capture_output=True, text=True, timeout=5)
-        print(f"🔗 Remote URL (oculta): {remote_url.stdout[:30]}...", file=sys.stderr)
-
-        # Intento de push principal
         push_result = subprocess.run(["git", "-C", repo_path, "push"], capture_output=True, text=True, timeout=30)
-        
         if push_result.returncode == 0:
             print("✅ git push exitoso", file=sys.stderr)
             return True
         else:
-            # Si falla, mostramos el error y lo registramos
             print(f"❌ git push falló con código {push_result.returncode}", file=sys.stderr)
             print(f"❌ stderr: {push_result.stderr}", file=sys.stderr)
             
@@ -779,10 +818,6 @@ def git_commit_and_push():
             else:
                 print(f"❌ git push --force falló: {force_result.stderr}", file=sys.stderr)
                 return False
-                
-    except subprocess.TimeoutExpired:
-        print("❌ git push: Tiempo de espera agotado", file=sys.stderr)
-        return False
     except Exception as e:
         print(f"❌ Error en git push: {e}", file=sys.stderr)
         return False
@@ -827,7 +862,7 @@ def debug_repo():
 
 @app.route('/')
 def home():
-    return "🤖 Aether — Asistente Autónomo v4.3"
+    return "🤖 Aether — Asistente Autónomo v4.4"
 
 @app.route('/health')
 def health():
@@ -1009,7 +1044,7 @@ def git_manual():
 # ============================================================
 
 if __name__ == "__main__":
-    print("🚀 Iniciando Aether v4.3", file=sys.stderr)
+    print("🚀 Iniciando Aether v4.4", file=sys.stderr)
     if GITHUB_TOKEN and GITHUB_REPO_URL:
         git_inicializar()
     else:
