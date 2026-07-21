@@ -1,3 +1,33 @@
+@app.route('/debug_repo', methods=['GET'])
+def debug_repo():
+    import subprocess
+    repo_path = os.path.join(os.getcwd(), REPO_DIR)
+    result = {
+        "repo_path": repo_path,
+        "exists": os.path.exists(repo_path),
+        "is_git": os.path.exists(os.path.join(repo_path, ".git")),
+        "git_remote": "",
+        "git_status": "",
+        "git_log": "",
+        "app_py_exists": os.path.exists(os.path.join(repo_path, "app.py")),
+        "requirements_exists": os.path.exists(os.path.join(repo_path, "requirements.txt")),
+    }
+    try:
+        remote = subprocess.run(["git", "-C", repo_path, "remote", "-v"], capture_output=True, text=True, timeout=5)
+        result["git_remote"] = remote.stdout
+    except Exception as e:
+        result["git_remote_error"] = str(e)
+    try:
+        status = subprocess.run(["git", "-C", repo_path, "status", "--porcelain"], capture_output=True, text=True, timeout=5)
+        result["git_status"] = status.stdout
+    except Exception as e:
+        result["git_status_error"] = str(e)
+    try:
+        log = subprocess.run(["git", "-C", repo_path, "log", "--oneline", "-n", "5"], capture_output=True, text=True, timeout=5)
+        result["git_log"] = log.stdout
+    except Exception as e:
+        result["git_log_error"] = str(e)
+    return jsonify(result)
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
