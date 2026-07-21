@@ -2,8 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Aether — Asistente Autónomo con Auto-mejora Persistente
-Versión: 3.1 (Reparada)
-Correcciones: JSONEncoder para datetime, eliminado input(), rollback funcional.
+Versión: 3.2 (Corrección JSONEncoder)
 """
 
 import os
@@ -20,7 +19,6 @@ import traceback
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Tuple
 from flask import Flask, request, jsonify
-from flask.json import JSONEncoder
 import requests
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -140,17 +138,21 @@ def init_db():
 init_db()
 
 # ============================================================
-# FLASK CON JSONEncoder PERSONALIZADO
+# CREAR APP Y CONFIGURAR JSON ENCODER
 # ============================================================
 
-class CustomJSONEncoder(JSONEncoder):
-    """Convierte datetime a string ISO 8601 para JSON."""
+app = Flask(__name__)
+
+# Clase JSONEncoder personalizada (para serializar datetime)
+class CustomJSONEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, datetime):
             return obj.isoformat()
+        if isinstance(obj, RealDictCursor):
+            return dict(obj)
         return super().default(obj)
 
-app = Flask(__name__)
+# Asignar el encoder a la aplicación
 app.json_encoder = CustomJSONEncoder
 
 # ============================================================
@@ -516,7 +518,7 @@ def generar_mejora(objetivo: str, historial: List[Dict]) -> Optional[str]:
     prompt = f"""
 Eres Aether, un asistente autónomo que se mejora a sí mismo.
 OBJETIVO ACTUAL: {objetivo}
-Mejoras anteriores: {json.dumps(historial[-5:], indent=2)}
+Mejoras anteriores: {json.dumps(historial[-5:], indent=2, default=str)}
 REGLAS DE SEGURIDAD (NO LAS ROMPAS):
 1. Mantén la estructura de servidor Flask. No elimines las rutas existentes.
 2. NO uses input() ni funciones interactivas de consola.
@@ -609,8 +611,8 @@ def ciclo_aprendizaje():
     prompt_libre = f"""
 Eres Aether, un asistente autónomo.
 No hay tareas específicas. Sugiere UNA mejora pequeña y segura.
-Contexto de memoria reciente: {json.dumps(memoria, indent=2)}
-Mejoras anteriores: {json.dumps(historial, indent=2)}
+Contexto de memoria reciente: {json.dumps(memoria, indent=2, default=str)}
+Mejoras anteriores: {json.dumps(historial, indent=2, default=str)}
 La mejora debe ser:
 - Incremental (menos de 50 líneas)
 - Segura (no romper el sistema)
@@ -871,7 +873,7 @@ def rollback_manual():
 # ============================================================
 
 if __name__ == "__main__":
-    print("🚀 Iniciando Aether (Asistente Autónomo) v3.1", file=sys.stderr)
+    print("🚀 Iniciando Aether (Asistente Autónomo) v3.2", file=sys.stderr)
     if GITHUB_TOKEN and GITHUB_REPO_URL:
         git_inicializar()
     else:
