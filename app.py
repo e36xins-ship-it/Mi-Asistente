@@ -10,8 +10,8 @@ import re
 import subprocess
 from datetime import datetime
 from flask import Flask, request, jsonify
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import psycopg
+from psycopg.rows import dict_row
 
 app = Flask(__name__)
 
@@ -34,7 +34,8 @@ os.makedirs(CARPETA_REPO, exist_ok=True)
 # ============================================
 
 def get_db_connection():
-    return psycopg2.connect(DATABASE_URL)
+    """Devuelve una conexión a la base de datos usando psycopg3."""
+    return psycopg.connect(DATABASE_URL)
 
 def init_db():
     """Crea las tablas si no existen."""
@@ -79,12 +80,12 @@ def init_db():
 init_db()
 
 # ============================================
-# FUNCIONES DE ACCESO A DATOS
+# FUNCIONES DE ACCESO A DATOS (psycopg3)
 # ============================================
 
 def db_get_tareas():
     conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur = conn.cursor(row_factory=dict_row)
     cur.execute("SELECT * FROM tareas ORDER BY id")
     tareas = cur.fetchall()
     cur.close()
@@ -128,7 +129,7 @@ def db_guardar_historial(mejora, backup_path):
 
 def db_get_historial(limit=5):
     conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur = conn.cursor(row_factory=dict_row)
     cur.execute("SELECT * FROM historial ORDER BY timestamp DESC LIMIT %s", (limit,))
     historial = cur.fetchall()
     cur.close()
@@ -157,7 +158,7 @@ def db_set_config(key, value):
 
 def db_get_all_config():
     conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur = conn.cursor(row_factory=dict_row)
     cur.execute("SELECT key, value FROM config")
     rows = cur.fetchall()
     cur.close()
@@ -525,7 +526,6 @@ def configurar_proveedor():
     if provider not in ['gemini', 'deepseek', 'openai', 'anthropic']:
         return jsonify({"error": "Provider no soportado"}), 400
     db_set_config(f"{provider}_api_key", api_key)
-    # Opcional: modelo y prioridad
     if 'model' in data:
         db_set_config(f"{provider}_model", data['model'])
     if 'priority' in data:
@@ -552,7 +552,6 @@ def recibir_orden():
         threading.Thread(target=aprender_y_mejorar, daemon=True).start()
         return jsonify({"status": "ok", "message": "Aprendizaje iniciado"})
     elif orden.startswith("/config"):
-        # Formato: /config gemini TU_CLAVE
         parts = orden.split()
         if len(parts) >= 3:
             provider = parts[1]
