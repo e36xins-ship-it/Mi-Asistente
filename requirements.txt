@@ -1,5 +1,5 @@
 flask
 requests
-psycopg[binary]
+psycopg2-binary>=2.9.11
 openai
 anthropic
