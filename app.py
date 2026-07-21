@@ -1,41 +1,43 @@
 # app.py
 
-import random
-
-class Aether:
+class AsistenteAether:
     def __init__(self):
         self.mejoras = []
-        self.conocimientos = []
+        self.objetivo_actual = "Mejorar el sistema en general"
 
-    def aprender_nuevo_conocimiento(self, conocimiento):
-        """Aprende algo nuevo y lo añade a la lista de conocimientos"""
-        self.conocimientos.append(conocimiento)
+    def aprender_nuevo_conocimiento(self):
+        nuevo_conocimiento = "Aprendizaje automático"
+        self.mejoras.append(nuevo_conocimiento)
+        print(f"Se ha agregado el conocimiento de {nuevo_conocimiento} a la lista de mejoras")
 
-    def ver_conocimientos(self):
-        """Muestra todos los conocimientos aprendidos"""
-        return self.conocimientos
+    def mejorar_sistema(self):
+        if self.objetivo_actual == "Mejorar el sistema en general":
+            self.aprender_nuevo_conocimiento()
+            print("El sistema se ha mejorado con éxito")
+        else:
+            print("El objetivo actual no es mejorar el sistema")
 
-    def mejorar_sistema(self, mejora):
-        """Añade una nueva mejora al sistema"""
-        self.mejoras.append(mejora)
-
-    def ver_mejoras(self):
-        """Muestra todas las mejoras del sistema"""
-        return self.mejoras
-
-    def generar_nueva_funcionalidad(self):
-        """Genera una nueva funcionalidad aleatoria"""
-        funcionalidades = ["Reconocimiento de patrones", "Análisis de datos", "Generación de texto"]
-        return random.choice(funcionalidades)
+    def mostrar_mejoras(self):
+        print("Mejoras realizadas:")
+        for i, mejora in enumerate(self.mejoras):
+            print(f"{i+1}. {mejora}")
 
 def main():
-    aether = Aether()
-    aether.aprender_nuevo_conocimiento("Programación en Python")
-    aether.mejorar_sistema("Implementación de algoritmos de aprendizaje automático")
-    print(aether.ver_conocimientos())
-    print(aether.ver_mejoras())
-    nueva_funcionalidad = aether.generar_nueva_funcionalidad()
-    print(f"Nueva funcionalidad: {nueva_funcionalidad}")
+    asistente = AsistenteAether()
+    while True:
+        print("\nOpciones:")
+        print("1. Mejorar el sistema")
+        print("2. Mostrar mejoras")
+        print("3. Salir")
+        opcion = input("Ingrese una opción: ")
+        if opcion == "1":
+            asistente.mejorar_sistema()
+        elif opcion == "2":
+            asistente.mostrar_mejoras()
+        elif opcion == "3":
+            break
+        else:
+            print("Opción inválida. Por favor, ingrese una opción válida")
 
 if __name__ == "__main__":
     main()
