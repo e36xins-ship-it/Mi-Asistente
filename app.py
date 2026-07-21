@@ -2,8 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 Aether — Asistente Autónomo con Auto-mejora Persistente
-Versión: 3.3 (Definitiva)
-Correcciones: endpoint /orden con force=True, serialización datetime, eliminado input()
+Versión: 4.0 (Definitiva)
+- OpenRouter como proveedor principal
+- Git con subprocess (sin gitpython)
+- Auto-ping activo
+- Logs detallados de Git
+- Manejo robusto de errores
 """
 
 import os
@@ -356,34 +360,43 @@ def db_get_memoria_semantica(key):
     return row["value"] if row else None
 
 # ============================================================
-# GESTIÓN DE PROVEEDORES (Multi-LLM)
+# GESTIÓN DE PROVEEDORES (Multi-LLM con OpenRouter como prioridad)
 # ============================================================
 
 def get_provider_config():
     config = db_get_all_config()
     providers = {}
     env_mapping = {
+        'openrouter': 'OPENROUTER_API_KEY',   # <--- NUEVO, PRIORIDAD MÁXIMA
         'gemini': 'GEMINI_API_KEY',
         'deepseek': 'DEEPSEEK_API_KEY',
         'openai': 'OPENAI_API_KEY',
         'anthropic': 'ANTHROPIC_API_KEY',
-        'groq': 'GROQ_API_KEY'
+        'groq': 'GROQ_API_KEY'                # <--- ÚLTIMO
     }
     for provider, env_var in env_mapping.items():
         api_key = config.get(f"{provider}_api_key")
         if not api_key:
             api_key = os.environ.get(env_var)
         if api_key:
-            if provider == 'gemini':
-                providers[provider] = {"type": "gemini", "api_key": api_key, "model": config.get(f"{provider}_model", "gemini-3.5-flash"), "priority": int(config.get(f"{provider}_priority", 1))}
+            if provider == 'openrouter':
+                providers[provider] = {
+                    "type": "openai_compatible",
+                    "api_key": api_key,
+                    "base_url": "https://openrouter.ai/api/v1",
+                    "model": config.get(f"{provider}_model", "google/gemini-2.0-flash-exp:free"),
+                    "priority": int(config.get(f"{provider}_priority", 1))
+                }
+            elif provider == 'gemini':
+                providers[provider] = {"type": "gemini", "api_key": api_key, "model": config.get(f"{provider}_model", "gemini-3.5-flash"), "priority": int(config.get(f"{provider}_priority", 2))}
             elif provider == 'deepseek':
-                providers[provider] = {"type": "openai_compatible", "api_key": api_key, "base_url": "https://api.deepseek.com", "model": config.get(f"{provider}_model", "deepseek-v4-flash"), "priority": int(config.get(f"{provider}_priority", 2))}
+                providers[provider] = {"type": "openai_compatible", "api_key": api_key, "base_url": "https://api.deepseek.com", "model": config.get(f"{provider}_model", "deepseek-v4-flash"), "priority": int(config.get(f"{provider}_priority", 3))}
             elif provider == 'openai':
-                providers[provider] = {"type": "openai_compatible", "api_key": api_key, "base_url": "https://api.openai.com/v1", "model": config.get(f"{provider}_model", "gpt-4o-mini"), "priority": int(config.get(f"{provider}_priority", 3))}
+                providers[provider] = {"type": "openai_compatible", "api_key": api_key, "base_url": "https://api.openai.com/v1", "model": config.get(f"{provider}_model", "gpt-4o-mini"), "priority": int(config.get(f"{provider}_priority", 4))}
             elif provider == 'anthropic':
-                providers[provider] = {"type": "anthropic", "api_key": api_key, "model": config.get(f"{provider}_model", "claude-3-5-haiku-20241022"), "priority": int(config.get(f"{provider}_priority", 4))}
+                providers[provider] = {"type": "anthropic", "api_key": api_key, "model": config.get(f"{provider}_model", "claude-3-5-haiku-20241022"), "priority": int(config.get(f"{provider}_priority", 5))}
             elif provider == 'groq':
-                providers[provider] = {"type": "openai_compatible", "api_key": api_key, "base_url": "https://api.groq.com/openai/v1", "model": config.get(f"{provider}_model", "llama-3.3-70b-versatile"), "priority": int(config.get(f"{provider}_priority", 5))}
+                providers[provider] = {"type": "openai_compatible", "api_key": api_key, "base_url": "https://api.groq.com/openai/v1", "model": config.get(f"{provider}_model", "llama-3.3-70b-versatile"), "priority": int(config.get(f"{provider}_priority", 6))}
     return providers
 
 # ============================================================
@@ -416,8 +429,6 @@ def llamar_modelo(pregunta, proveedores_preferidos=None):
         raise Exception("No hay proveedores configurados. Usa /config para añadir claves.")
     if proveedores_preferidos is None:
         proveedores_preferidos = sorted(providers.keys(), key=lambda p: providers[p]['priority'])
-    if 'groq' in providers and 'groq' not in proveedores_preferidos:
-        proveedores_preferidos.append('groq')
     ultimo_error = None
     for provider_name in proveedores_preferidos:
         if provider_name not in providers:
@@ -441,9 +452,6 @@ def llamar_modelo(pregunta, proveedores_preferidos=None):
             print(f"❌ {provider_name} falló: {e}", file=sys.stderr)
             ultimo_error = e
             sys.stderr.flush()
-            if provider_name == 'deepseek' and '402' in str(e) and 'groq' in providers:
-                if 'groq' not in proveedores_preferidos:
-                    proveedores_preferidos.append('groq')
             continue
     raise Exception(f"Todos los proveedores fallaron. Último error: {ultimo_error}")
 
@@ -655,7 +663,22 @@ def bucle_aprendizaje():
             time.sleep(60)
 
 # ============================================================
-# GIT AUTOMÁTICO
+# AUTO-PING (para mantener el servicio despierto)
+# ============================================================
+
+def self_ping():
+    """Hace ping a sí mismo cada 14 minutos para evitar que Render duerma el servicio."""
+    while True:
+        time.sleep(840)  # 14 minutos
+        try:
+            url = f"http://localhost:{os.environ.get('PORT', 10000)}/health"
+            requests.get(url, timeout=5)
+            print("🔋 Auto-ping: servicio mantenido activo", file=sys.stderr)
+        except Exception as e:
+            print(f"⚠️ Auto-ping falló: {e}", file=sys.stderr)
+
+# ============================================================
+# GIT AUTOMÁTICO (REESCRITO CON SUBPROCESS)
 # ============================================================
 
 def git_inicializar():
@@ -682,29 +705,77 @@ def git_inicializar():
             return False
 
 def git_commit_and_push():
+    """
+    Función reescrita completamente usando subprocess.
+    Configura usuario, copia app.py, hace add, commit y push.
+    Devuelve True si todo va bien, False en caso de error.
+    """
     if not GITHUB_TOKEN or not GITHUB_REPO_URL:
         print("⚠️ GitHub no configurado", file=sys.stderr)
         return False
+
     repo_path = os.path.join(os.getcwd(), REPO_DIR)
     if not os.path.exists(os.path.join(repo_path, ".git")):
         print("❌ Repositorio no inicializado", file=sys.stderr)
         return False
-    subprocess.run(["git", "-C", repo_path, "config", "user.email", "aether@asistente.local"], check=False)
-    subprocess.run(["git", "-C", repo_path, "config", "user.name", "Aether Asistente"], check=False)
-    shutil.copy2(__file__, os.path.join(repo_path, "app.py"))
+
+    # Configurar usuario de Git (local al repositorio)
+    try:
+        subprocess.run(["git", "-C", repo_path, "config", "user.email", "aether@asistente.local"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", repo_path, "config", "user.name", "Aether Asistente"], check=True, capture_output=True)
+        print("✅ Usuario de Git configurado", file=sys.stderr)
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Error configurando usuario de Git: {e.stderr.decode()}", file=sys.stderr)
+        return False
+
+    # Copiar app.py actual al repositorio
+    try:
+        shutil.copy2(__file__, os.path.join(repo_path, "app.py"))
+        print(f"📁 app.py copiado a {repo_path}", file=sys.stderr)
+    except Exception as e:
+        print(f"❌ Error copiando app.py: {e}", file=sys.stderr)
+        return False
+
+    # git add
     try:
         subprocess.run(["git", "-C", repo_path, "add", "app.py"], check=True, capture_output=True)
-        status = subprocess.run(["git", "-C", repo_path, "status", "--porcelain"], check=True, capture_output=True)
-        if not status.stdout.strip():
+        print("✅ git add app.py", file=sys.stderr)
+    except subprocess.CalledProcessError as e:
+        print(f"❌ git add falló: {e.stderr.decode()}", file=sys.stderr)
+        return False
+
+    # git status para ver si hay cambios
+    try:
+        result = subprocess.run(["git", "-C", repo_path, "status", "--porcelain"], check=True, capture_output=True, text=True)
+        if not result.stdout.strip():
             print("ℹ️ No hay cambios para commitear", file=sys.stderr)
-            return True
-        mensaje = f"Auto-mejora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            return True  # No hay cambios, pero no es un error
+        print(f"📊 git status: {result.stdout.strip()}", file=sys.stderr)
+    except subprocess.CalledProcessError as e:
+        print(f"❌ git status falló: {e.stderr.decode()}", file=sys.stderr)
+        return False
+
+    # git commit
+    mensaje = f"Auto-mejora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    try:
         subprocess.run(["git", "-C", repo_path, "commit", "-m", mensaje], check=True, capture_output=True)
+        print(f"✅ git commit: {mensaje}", file=sys.stderr)
+    except subprocess.CalledProcessError as e:
+        print(f"❌ git commit falló: {e.stderr.decode()}", file=sys.stderr)
+        return False
+
+    # git push
+    try:
+        # Asegurar que la rama remota existe (por si acaso)
+        subprocess.run(["git", "-C", repo_path, "push", "--set-upstream", "origin", "main"], check=False, capture_output=True)
         subprocess.run(["git", "-C", repo_path, "push"], check=True, capture_output=True)
-        print(f"✅ Commit y push: {mensaje}", file=sys.stderr)
+        print("✅ git push", file=sys.stderr)
         return True
+    except subprocess.CalledProcessError as e:
+        print(f"❌ git push falló: {e.stderr.decode()}", file=sys.stderr)
+        return False
     except Exception as e:
-        print(f"❌ Error git: {e}", file=sys.stderr)
+        print(f"❌ Error en git push: {e}", file=sys.stderr)
         return False
 
 # ============================================================
@@ -811,7 +882,7 @@ def configurar_proveedor():
         return jsonify({"error": "Falta provider o api_key"}), 400
     provider = data['provider']
     api_key = data['api_key']
-    if provider not in ['gemini', 'deepseek', 'openai', 'anthropic', 'groq']:
+    if provider not in ['gemini', 'deepseek', 'openai', 'anthropic', 'groq', 'openrouter']:
         return jsonify({"error": "Provider no soportado"}), 400
     db_set_config(f"{provider}_api_key", api_key)
     if 'model' in data:
@@ -883,15 +954,40 @@ def rollback_manual():
     return jsonify({"error": "Error al restaurar checkpoint"}), 500
 
 # ============================================================
+# ENDPOINT /memoria (resumen de memoria)
+# ============================================================
+
+@app.route('/memoria', methods=['GET'])
+def memoria():
+    try:
+        episodios = db_get_memoria_episodica(limit=50)
+        semantica = db_get_all_config()  # Podríamos filtrar por claves de memoria semántica
+        resumen = {
+            "total_episodios": len(episodios),
+            "ultimos_episodios": episodios[:5],
+            "memoria_semantica": {k: v for k, v in semantica.items() if k.startswith('memoria_')},
+            "fecha": datetime.now().isoformat()
+        }
+        return jsonify(resumen)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ============================================================
 # INICIO DEL SERVICIO
 # ============================================================
 
 if __name__ == "__main__":
-    print("🚀 Iniciando Aether (Asistente Autónomo) v3.3", file=sys.stderr)
+    print("🚀 Iniciando Aether (Asistente Autónomo) v4.0", file=sys.stderr)
     if GITHUB_TOKEN and GITHUB_REPO_URL:
         git_inicializar()
     else:
         print("⚠️ GitHub no configurado. No se podrá subir código.", file=sys.stderr)
+
+    # Lanzar auto-ping en segundo plano
+    threading.Thread(target=self_ping, daemon=True).start()
+
+    # Lanzar bucle de aprendizaje
     threading.Thread(target=bucle_aprendizaje, daemon=True).start()
+
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
