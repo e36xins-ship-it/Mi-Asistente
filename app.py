@@ -255,7 +255,7 @@ def get_provider_config():
         'deepseek': 'DEEPSEEK_API_KEY',
         'openai': 'OPENAI_API_KEY',
         'anthropic': 'ANTHROPIC_API_KEY',
-        'groq': 'GROQ_API_KEY'  # <-- AÑADIDO
+        'groq': 'GROQ_API_KEY'
     }
     
     for provider, env_var in env_mapping.items():
@@ -293,7 +293,7 @@ def get_provider_config():
                     "model": config.get(f"{provider}_model", "claude-3-5-haiku-20241022"),
                     "priority": int(config.get(f"{provider}_priority", 4))
                 }
-            elif provider == 'groq':  # <-- NUEVO BLOQUE
+            elif provider == 'groq':
                 providers[provider] = {
                     "type": "openai_compatible",
                     "api_key": api_key,
@@ -433,7 +433,7 @@ def aplicar_mejora(archivo_mejora):
         return False, str(e)
 
 # ============================================
-# GIT AUTOMÁTICO
+# GIT AUTOMÁTICO (CON USUARIO CONFIGURADO)
 # ============================================
 
 def git_inicializar():
@@ -464,15 +464,36 @@ def git_commit_and_push():
     if not os.path.exists(os.path.join(repo_path, ".git")):
         print("❌ Repositorio no inicializado", file=sys.stderr)
         return False
+    
+    # ============================================
+    # CONFIGURAR USUARIO DE GIT (NUEVO)
+    # ============================================
+    subprocess.run(["git", "-C", repo_path, "config", "user.email", "asistente@aether.local"], check=False, capture_output=True)
+    subprocess.run(["git", "-C", repo_path, "config", "user.name", "Aether Asistente"], check=False, capture_output=True)
+    
     shutil.copy2(__file__, os.path.join(repo_path, "app.py"))
+    
     try:
+        # Añadir archivo
         subprocess.run(["git", "-C", repo_path, "add", "app.py"], check=True, capture_output=True)
+        
+        # Verificar si hay cambios para commitear
+        status = subprocess.run(["git", "-C", repo_path, "status", "--porcelain"], check=True, capture_output=True)
+        if not status.stdout.strip():
+            print("ℹ️ No hay cambios para commitear. La mejora es idéntica al código actual.", file=sys.stderr)
+            return True  # No es un error, solo no hay cambios
+        
+        # Commit
         mensaje = f"Auto-mejora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         subprocess.run(["git", "-C", repo_path, "commit", "-m", mensaje], check=True, capture_output=True)
+        # Push
         subprocess.run(["git", "-C", repo_path, "push"], check=True, capture_output=True)
         print(f"✅ Commit y push: {mensaje}", file=sys.stderr)
         sys.stderr.flush()
         return True
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Error git: {e.stderr.decode()}", file=sys.stderr)
+        return False
     except Exception as e:
         print(f"❌ Error git: {e}", file=sys.stderr)
         return False
