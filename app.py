@@ -16,7 +16,6 @@ from flask import Flask, request, jsonify
 # ============================================
 
 DB_TYPE = None  # 'postgres' o 'sqlite'
-DB_CONN = None
 
 # Intentar importar psycopg2 (versión 2)
 try:
@@ -42,23 +41,20 @@ except ImportError:
 # ============================================
 
 def get_db_connection():
-    global DB_CONN
+    """Devuelve una nueva conexión a la base de datos."""
     if DB_TYPE == 'postgres':
         DATABASE_URL = os.environ.get("DATABASE_URL")
         if not DATABASE_URL:
             raise Exception("DATABASE_URL no configurada para PostgreSQL")
-        if DB_CONN is None or DB_CONN.closed:
-            if 'psycopg2' in sys.modules:
-                DB_CONN = psycopg2.connect(DATABASE_URL)
-            else:
-                DB_CONN = psycopg.connect(DATABASE_URL)
-        return DB_CONN
+        if 'psycopg2' in sys.modules:
+            return psycopg2.connect(DATABASE_URL)
+        else:
+            return psycopg.connect(DATABASE_URL)
     else:
         # SQLite: crear archivo local
-        if DB_CONN is None:
-            DB_CONN = sqlite3.connect('data.db', check_same_thread=False)
-            DB_CONN.row_factory = sqlite3.Row
-        return DB_CONN
+        conn = sqlite3.connect('data.db', check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
 
 def init_db():
     """Crea las tablas si no existen (adaptado a SQLite o PostgreSQL)."""
@@ -140,7 +136,7 @@ def init_db():
 init_db()
 
 # ============================================
-# FUNCIONES DE ACCESO A DATOS (adaptativas)
+# FUNCIONES DE ACCESO A DATOS (con conexiones locales)
 # ============================================
 
 def db_get_tareas():
