@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 Aether — Asistente Autónomo con Auto-mejora Persistente
-Versión: 3.2 (Corrección JSONEncoder)
+Versión: 3.3 (Definitiva)
+Correcciones: endpoint /orden con force=True, serialización datetime, eliminado input()
 """
 
 import os
@@ -143,16 +144,17 @@ init_db()
 
 app = Flask(__name__)
 
-# Clase JSONEncoder personalizada (para serializar datetime)
 class CustomJSONEncoder(json.JSONEncoder):
+    """Convierte datetime a string ISO 8601 y maneja objetos RealDictRow."""
     def default(self, obj):
         if isinstance(obj, datetime):
             return obj.isoformat()
         if isinstance(obj, RealDictCursor):
             return dict(obj)
+        if hasattr(obj, '__dict__'):
+            return obj.__dict__
         return super().default(obj)
 
-# Asignar el encoder a la aplicación
 app.json_encoder = CustomJSONEncoder
 
 # ============================================================
@@ -820,32 +822,42 @@ def configurar_proveedor():
 
 @app.route('/orden', methods=['POST'])
 def recibir_orden():
-    data = request.get_json()
+    try:
+        data = request.get_json(force=True)
+    except Exception as e:
+        return jsonify({"error": f"Error al leer JSON: {str(e)}"}), 400
+
     if not data or 'orden' not in data:
         return jsonify({"error": "Falta la orden"}), 400
+
     orden = data['orden']
     print(f"📨 Orden recibida: {orden}", file=sys.stderr)
+
     if orden.startswith("/tarea"):
         descripcion = orden[7:].strip()
         if descripcion:
             tarea_id = db_add_tarea(descripcion)
             return jsonify({"status": "ok", "message": f"Tarea añadida (ID {tarea_id})"})
         return jsonify({"error": "Falta descripción"}), 400
+
     elif orden.startswith("/microtarea"):
         descripcion = orden[12:].strip()
         if descripcion:
             microtarea_id = db_add_microtarea(descripcion)
             return jsonify({"status": "ok", "message": f"Microtarea añadida (ID {microtarea_id})"})
         return jsonify({"error": "Falta descripción"}), 400
+
     elif orden.startswith("/aprender"):
         threading.Thread(target=ciclo_aprendizaje, daemon=True).start()
         return jsonify({"status": "ok", "message": "Ciclo de aprendizaje iniciado"})
+
     elif orden.startswith("/rollback"):
         checkpoint = db_get_checkpoint_activo()
         if checkpoint:
             if restaurar_checkpoint(checkpoint["id"]):
                 return jsonify({"status": "ok", "message": f"Rollback al checkpoint {checkpoint['id']}"})
         return jsonify({"error": "No hay checkpoint disponible"}), 400
+
     elif orden.startswith("/config"):
         parts = orden.split()
         if len(parts) >= 3:
@@ -854,8 +866,10 @@ def recibir_orden():
             db_set_config(f"{provider}_api_key", api_key)
             return jsonify({"status": "ok", "message": f"Clave para {provider} guardada"})
         return jsonify({"error": "Formato: /config <provider> <api_key>"}), 400
+
     elif orden.startswith("/estado"):
         return estado_sistema()
+
     else:
         return jsonify({"error": "Orden no reconocida"}), 400
 
@@ -873,7 +887,7 @@ def rollback_manual():
 # ============================================================
 
 if __name__ == "__main__":
-    print("🚀 Iniciando Aether (Asistente Autónomo) v3.2", file=sys.stderr)
+    print("🚀 Iniciando Aether (Asistente Autónomo) v3.3", file=sys.stderr)
     if GITHUB_TOKEN and GITHUB_REPO_URL:
         git_inicializar()
     else:
