@@ -1,43 +1,54 @@
 # app.py
 
-class AsistenteAether:
+class Aether:
     def __init__(self):
         self.mejoras = []
-        self.objetivo_actual = "Mejorar el sistema en general"
+        self.funcionalidades = {
+            "aprendizaje": self.aprendizaje,
+            "mejorar_sistema": self.mejorar_sistema,
+            "añadir_funcionalidad": self.añadir_funcionalidad,
+        }
 
-    def aprender_nuevo_conocimiento(self):
-        nuevo_conocimiento = "Aprendizaje automático"
+    def aprendizaje(self):
+        # Aprender algo nuevo
+        nuevo_conocimiento = input("Ingrese algo nuevo que aprender: ")
+        print(f"Aprendiendo sobre {nuevo_conocimiento}...")
         self.mejoras.append(nuevo_conocimiento)
-        print(f"Se ha agregado el conocimiento de {nuevo_conocimiento} a la lista de mejoras")
 
     def mejorar_sistema(self):
-        if self.objetivo_actual == "Mejorar el sistema en general":
-            self.aprender_nuevo_conocimiento()
-            print("El sistema se ha mejorado con éxito")
-        else:
-            print("El objetivo actual no es mejorar el sistema")
+        # Mejorar el sistema en general
+        print("Mejorando el sistema...")
+        self.añadir_funcionalidad()
 
-    def mostrar_mejoras(self):
-        print("Mejoras realizadas:")
-        for i, mejora in enumerate(self.mejoras):
-            print(f"{i+1}. {mejora}")
+    def añadir_funcionalidad(self):
+        # Añadir funcionalidad al sistema
+        nueva_funcionalidad = input("Ingrese una nueva funcionalidad: ")
+        print(f"Añadiendo funcionalidad {nueva_funcionalidad}...")
+        self.funcionalidades[nueva_funcionalidad] = self.nueva_funcionalidad
+
+    def nueva_funcionalidad(self):
+        # Nueva funcionalidad
+        print("Funcionalidad añadida con éxito.")
 
 def main():
-    asistente = AsistenteAether()
+    aether = Aether()
     while True:
-        print("\nOpciones:")
-        print("1. Mejorar el sistema")
-        print("2. Mostrar mejoras")
-        print("3. Salir")
+        print("\nMenú de Opciones:")
+        print("1. Aprender algo nuevo")
+        print("2. Mejorar el sistema")
+        print("3. Añadir funcionalidad")
+        print("4. Salir")
         opcion = input("Ingrese una opción: ")
         if opcion == "1":
-            asistente.mejorar_sistema()
+            aether.aprendizaje()
         elif opcion == "2":
-            asistente.mostrar_mejoras()
+            aether.mejorar_sistema()
         elif opcion == "3":
+            aether.añadir_funcionalidad()
+        elif opcion == "4":
             break
         else:
-            print("Opción inválida. Por favor, ingrese una opción válida")
+            print("Opción inválida. Por favor, ingrese una opción válida.")
 
 if __name__ == "__main__":
     main()
