@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Aether — Asistente Autónomo con Auto-mejora Persistente
-Versión: 4.1 (Corrección de autenticación OpenRouter y Git)
+Versión: 4.2 (Completa y funcional)
 """
 
 import os
@@ -51,7 +51,83 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
-    # ... (mismo código de creación de tablas)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS tareas (
+            id SERIAL PRIMARY KEY,
+            descripcion TEXT NOT NULL,
+            estado TEXT DEFAULT 'pendiente',
+            prioridad INTEGER DEFAULT 0,
+            creada_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completada_en TIMESTAMP,
+            intentos INTEGER DEFAULT 0,
+            ultimo_error TEXT
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS historial (
+            id SERIAL PRIMARY KEY,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            mejora TEXT,
+            backup_path TEXT,
+            estado TEXT DEFAULT 'aplicada'
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS config (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS memoria_episodica (
+            id SERIAL PRIMARY KEY,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            pregunta TEXT,
+            respuesta TEXT,
+            leccion TEXT,
+            exito BOOLEAN DEFAULT TRUE
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS memoria_semantica (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS checkpoints (
+            id SERIAL PRIMARY KEY,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            descripcion TEXT,
+            codigo TEXT,
+            activo BOOLEAN DEFAULT TRUE
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS fallos (
+            id SERIAL PRIMARY KEY,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            tarea_id INTEGER,
+            error TEXT,
+            stack_trace TEXT,
+            resuelto BOOLEAN DEFAULT FALSE
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS microtareas (
+            id SERIAL PRIMARY KEY,
+            descripcion TEXT NOT NULL,
+            estimado_minutos INTEGER DEFAULT 5,
+            estado TEXT DEFAULT 'pendiente',
+            creada_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            iniciada_en TIMESTAMP,
+            completada_en TIMESTAMP,
+            intentos INTEGER DEFAULT 0,
+            ultimo_error TEXT,
+            prioridad INTEGER DEFAULT 0
+        )
+    """)
     conn.commit()
     cur.close()
     conn.close()
@@ -79,10 +155,185 @@ app.json_encoder = CustomJSONEncoder
 # FUNCIONES DE BASE DE DATOS
 # ============================================================
 
-# ... (todas las funciones db_* iguales que en la versión anterior)
+def db_get_tareas(estado=None):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    if estado:
+        cur.execute("SELECT * FROM tareas WHERE estado = %s ORDER BY prioridad DESC, creada_en", (estado,))
+    else:
+        cur.execute("SELECT * FROM tareas ORDER BY prioridad DESC, creada_en")
+    result = cur.fetchall()
+    cur.close()
+    conn.close()
+    return result
+
+def db_add_tarea(descripcion, prioridad=0):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO tareas (descripcion, prioridad) VALUES (%s, %s) RETURNING id", (descripcion, prioridad))
+    tarea_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return tarea_id
+
+def db_marcar_completada(tarea_id, error=None):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    if error:
+        cur.execute("UPDATE tareas SET estado = 'fallida', completada_en = CURRENT_TIMESTAMP, intentos = intentos + 1, ultimo_error = %s WHERE id = %s", (error, tarea_id))
+    else:
+        cur.execute("UPDATE tareas SET estado = 'completada', completada_en = CURRENT_TIMESTAMP WHERE id = %s", (tarea_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def db_get_microtarea_pendiente():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM microtareas WHERE estado = 'pendiente' ORDER BY prioridad DESC, creada_en LIMIT 1")
+    result = cur.fetchone()
+    cur.close()
+    conn.close()
+    return result
+
+def db_add_microtarea(descripcion, estimado_minutos=5, prioridad=0):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO microtareas (descripcion, estimado_minutos, prioridad) VALUES (%s, %s, %s) RETURNING id", (descripcion, estimado_minutos, prioridad))
+    microtarea_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return microtarea_id
+
+def db_microtarea_iniciada(id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE microtareas SET estado = 'en_progreso', iniciada_en = CURRENT_TIMESTAMP, intentos = intentos + 1 WHERE id = %s", (id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def db_microtarea_completada(id, exito=True, error=None):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    if exito:
+        cur.execute("UPDATE microtareas SET estado = 'completada', completada_en = CURRENT_TIMESTAMP WHERE id = %s", (id,))
+    else:
+        cur.execute("UPDATE microtareas SET estado = 'fallida', completada_en = CURRENT_TIMESTAMP, ultimo_error = %s WHERE id = %s", (error, id))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def db_guardar_historial(mejora, backup_path, estado="aplicada"):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO historial (mejora, backup_path, estado) VALUES (%s, %s, %s) RETURNING id", (mejora[:500], backup_path, estado))
+    historial_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return historial_id
+
+def db_get_historial(limit=10):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM historial ORDER BY timestamp DESC LIMIT %s", (limit,))
+    result = cur.fetchall()
+    cur.close()
+    conn.close()
+    return result
+
+def db_get_config(key):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM config WHERE key = %s", (key,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row["value"] if row else None
+
+def db_set_config(key, value):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (key, value))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def db_get_all_config():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT key, value FROM config")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return {row["key"]: row["value"] for row in rows}
+
+def db_guardar_checkpoint(descripcion, codigo):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE checkpoints SET activo = FALSE WHERE activo = TRUE")
+    cur.execute("INSERT INTO checkpoints (descripcion, codigo, activo) VALUES (%s, %s, TRUE) RETURNING id", (descripcion, codigo))
+    checkpoint_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return checkpoint_id
+
+def db_get_checkpoint_activo():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM checkpoints WHERE activo = TRUE ORDER BY id DESC LIMIT 1")
+    result = cur.fetchone()
+    cur.close()
+    conn.close()
+    return result
+
+def db_rollback_checkpoint(checkpoint_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT codigo FROM checkpoints WHERE id = %s", (checkpoint_id,))
+    row = cur.fetchone()
+    if not row:
+        cur.close()
+        conn.close()
+        return None
+    codigo = row["codigo"]
+    cur.execute("UPDATE checkpoints SET activo = FALSE WHERE id = %s", (checkpoint_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return codigo
+
+def db_registrar_fallo(tarea_id, error, stack_trace):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO fallos (tarea_id, error, stack_trace) VALUES (%s, %s, %s)", (tarea_id, error[:500], stack_trace[:1000]))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def db_guardar_memoria_episodica(pregunta, respuesta, leccion, exito=True):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO memoria_episodica (pregunta, respuesta, leccion, exito) VALUES (%s, %s, %s, %s)", (pregunta, respuesta[:500], leccion[:500], exito))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def db_get_memoria_episodica(limit=10):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM memoria_episodica ORDER BY timestamp DESC LIMIT %s", (limit,))
+    result = cur.fetchall()
+    cur.close()
+    conn.close()
+    return result
 
 # ============================================================
-# GESTIÓN DE PROVEEDORES (OpenRouter corregido)
+# GESTIÓN DE PROVEEDORES
 # ============================================================
 
 def get_provider_config():
@@ -126,11 +377,10 @@ def get_provider_config():
 # ============================================================
 
 def _llamar_openrouter(pregunta, provider):
-    """Llama a OpenRouter con el header de autenticación correcto."""
     url = f"{provider['base_url']}/chat/completions"
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {provider['api_key']}"  # <-- CORREGIDO
+        "Authorization": f"Bearer {provider['api_key']}"
     }
     payload = {
         "model": provider['model'],
@@ -239,46 +489,23 @@ def validar_codigo_completo(codigo: str) -> Tuple[bool, str, Optional[str]]:
 def guardar_checkpoint(descripcion: str = "") -> int:
     with open(__file__, 'r') as f:
         codigo = f.read()
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("UPDATE checkpoints SET activo = FALSE WHERE activo = TRUE")
-    cur.execute("INSERT INTO checkpoints (descripcion, codigo, activo) VALUES (%s, %s, TRUE) RETURNING id", (descripcion, codigo))
-    checkpoint_id = cur.fetchone()["id"]
-    conn.commit()
-    cur.close()
-    conn.close()
-    return checkpoint_id
+    return db_guardar_checkpoint(descripcion or f"Checkpoint {datetime.now().isoformat()}", codigo)
 
 def restaurar_checkpoint(checkpoint_id: int = None) -> bool:
-    conn = get_db_connection()
-    cur = conn.cursor()
     if checkpoint_id is None:
-        cur.execute("SELECT * FROM checkpoints WHERE activo = TRUE ORDER BY id DESC LIMIT 1")
-        checkpoint = cur.fetchone()
+        checkpoint = db_get_checkpoint_activo()
         if not checkpoint:
-            cur.close()
-            conn.close()
             return False
         checkpoint_id = checkpoint["id"]
-    cur.execute("SELECT codigo FROM checkpoints WHERE id = %s", (checkpoint_id,))
-    row = cur.fetchone()
-    if not row:
-        cur.close()
-        conn.close()
+    codigo = db_rollback_checkpoint(checkpoint_id)
+    if codigo is None:
         return False
-    codigo = row["codigo"]
     valido, msg, _ = validar_codigo_completo(codigo)
     if not valido:
         print(f"❌ Checkpoint {checkpoint_id} no válido: {msg}", file=sys.stderr)
-        cur.close()
-        conn.close()
         return False
     with open(__file__, 'w') as f:
         f.write(codigo)
-    cur.execute("UPDATE checkpoints SET activo = FALSE WHERE id = %s", (checkpoint_id,))
-    conn.commit()
-    cur.close()
-    conn.close()
     print(f"✅ Restaurado checkpoint {checkpoint_id}", file=sys.stderr)
     return True
 
@@ -328,12 +555,7 @@ def aplicar_mejora(codigo: str) -> Tuple[bool, str]:
     try:
         with open(__file__, 'w') as f:
             f.write(codigo)
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("INSERT INTO historial (mejora, backup_path, estado) VALUES (%s, %s, %s)", (codigo[:500], backup_path, "aplicada"))
-        conn.commit()
-        cur.close()
-        conn.close()
+        db_guardar_historial(codigo[:500], backup_path, "aplicada")
         return True, f"Mejora aplicada. Checkpoint: {checkpoint_id}"
     except Exception as e:
         restaurar_checkpoint(checkpoint_id)
@@ -343,20 +565,9 @@ def ejecutar_microtarea(microtarea: Dict) -> bool:
     tarea_id = microtarea["id"]
     descripcion = microtarea["descripcion"]
     print(f"🔧 Ejecutando microtarea {tarea_id}: {descripcion}", file=sys.stderr)
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("UPDATE microtareas SET estado = 'en_progreso', iniciada_en = CURRENT_TIMESTAMP, intentos = intentos + 1 WHERE id = %s", (tarea_id,))
-    conn.commit()
-    cur.close()
-    conn.close()
+    db_microtarea_iniciada(tarea_id)
     try:
-        historial = []
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM historial ORDER BY timestamp DESC LIMIT 5")
-        historial = cur.fetchall()
-        cur.close()
-        conn.close()
+        historial = db_get_historial(5)
         respuesta = generar_mejora(descripcion, historial)
         if not respuesta:
             raise Exception("No se pudo generar una mejora")
@@ -366,86 +577,36 @@ def ejecutar_microtarea(microtarea: Dict) -> bool:
         exito, mensaje = aplicar_mejora(codigo)
         if not exito:
             raise Exception(mensaje)
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("UPDATE microtareas SET estado = 'completada', completada_en = CURRENT_TIMESTAMP WHERE id = %s", (tarea_id,))
-        conn.commit()
-        cur.close()
-        conn.close()
+        db_microtarea_completada(tarea_id, exito=True)
         print(f"✅ Microtarea {tarea_id} completada con éxito", file=sys.stderr)
         return True
     except Exception as e:
         error_msg = str(e)
         print(f"❌ Microtarea {tarea_id} falló: {error_msg}", file=sys.stderr)
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("INSERT INTO fallos (tarea_id, error, stack_trace) VALUES (%s, %s, %s)", (tarea_id, error_msg[:500], traceback.format_exc()[:1000]))
-        conn.commit()
-        cur.close()
-        conn.close()
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("UPDATE microtareas SET estado = 'fallida', completada_en = CURRENT_TIMESTAMP, ultimo_error = %s WHERE id = %s", (error_msg[:500], tarea_id))
-        conn.commit()
-        cur.close()
-        conn.close()
-        checkpoint = None
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM checkpoints WHERE activo = TRUE ORDER BY id DESC LIMIT 1")
-        checkpoint = cur.fetchone()
-        cur.close()
-        conn.close()
+        db_registrar_fallo(tarea_id, error_msg, traceback.format_exc())
+        db_microtarea_completada(tarea_id, exito=False, error=error_msg[:500])
+        checkpoint = db_get_checkpoint_activo()
         if checkpoint:
             restaurar_checkpoint(checkpoint["id"])
         return False
 
 def ciclo_aprendizaje():
     print("🧠 Iniciando ciclo de aprendizaje...", file=sys.stderr)
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM microtareas WHERE estado = 'pendiente' ORDER BY prioridad DESC, creada_en LIMIT 1")
-    microtarea = cur.fetchone()
-    cur.close()
-    conn.close()
+    microtarea = db_get_microtarea_pendiente()
     if microtarea:
         print(f"📋 Microtarea pendiente: {microtarea['descripcion']}", file=sys.stderr)
         ejecutar_microtarea(microtarea)
         return
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM tareas WHERE estado = 'pendiente' ORDER BY prioridad DESC, creada_en LIMIT 1")
-    tarea = cur.fetchone()
-    cur.close()
-    conn.close()
-    if tarea:
+    tareas = db_get_tareas("pendiente")
+    if tareas:
+        tarea = tareas[0]
         print(f"📋 Tarea pendiente: {tarea['descripcion']}", file=sys.stderr)
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("INSERT INTO microtareas (descripcion, prioridad) VALUES (%s, %s) RETURNING id", (tarea["descripcion"], tarea["prioridad"]))
-        conn.commit()
-        cur.close()
-        conn.close()
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("UPDATE tareas SET estado = 'completada', completada_en = CURRENT_TIMESTAMP WHERE id = %s", (tarea["id"],))
-        conn.commit()
-        cur.close()
-        conn.close()
+        db_add_microtarea(tarea["descripcion"], prioridad=tarea["prioridad"])
+        db_marcar_completada(tarea["id"])
         return
     print("🧠 No hay tareas pendientes. Aprendizaje libre controlado.", file=sys.stderr)
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM memoria_episodica ORDER BY timestamp DESC LIMIT 5")
-    memoria = cur.fetchall()
-    cur.close()
-    conn.close()
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM historial ORDER BY timestamp DESC LIMIT 5")
-    historial = cur.fetchall()
-    cur.close()
-    conn.close()
+    memoria = db_get_memoria_episodica(5)
+    historial = db_get_historial(5)
     prompt_libre = f"""
 Eres Aether, un asistente autónomo.
 No hay tareas específicas. Sugiere UNA mejora pequeña y segura.
@@ -460,20 +621,10 @@ Responde con el código Python completo modificado.
         if codigo:
             exito, mensaje = aplicar_mejora(codigo)
             if exito:
-                conn = get_db_connection()
-                cur = conn.cursor()
-                cur.execute("INSERT INTO memoria_episodica (pregunta, respuesta, leccion, exito) VALUES (%s, %s, %s, %s)", ("Aprendizaje libre", respuesta[:500], f"Mejora aplicada: {mensaje}", True))
-                conn.commit()
-                cur.close()
-                conn.close()
+                db_guardar_memoria_episodica("Aprendizaje libre", respuesta[:500], f"Mejora aplicada: {mensaje}", exito=True)
                 print(f"✅ Mejora libre aplicada: {mensaje}", file=sys.stderr)
             else:
-                conn = get_db_connection()
-                cur = conn.cursor()
-                cur.execute("INSERT INTO memoria_episodica (pregunta, respuesta, leccion, exito) VALUES (%s, %s, %s, %s)", ("Aprendizaje libre fallido", respuesta[:500], f"Error: {mensaje}", False))
-                conn.commit()
-                cur.close()
-                conn.close()
+                db_guardar_memoria_episodica("Aprendizaje libre fallido", respuesta[:500], f"Error: {mensaje}", exito=False)
                 print(f"❌ Mejora libre falló: {mensaje}", file=sys.stderr)
     except Exception as e:
         print(f"❌ Error en aprendizaje libre: {e}", file=sys.stderr)
@@ -504,8 +655,7 @@ def self_ping():
     while True:
         time.sleep(840)
         try:
-            url = f"http://localhost:{os.environ.get('PORT', 10000)}/health"
-            requests.get(url, timeout=5)
+            requests.get(f"http://localhost:{os.environ.get('PORT', 10000)}/health", timeout=5)
             print("🔋 Auto-ping: servicio mantenido activo", file=sys.stderr)
         except Exception as e:
             print(f"⚠️ Auto-ping falló: {e}", file=sys.stderr)
@@ -614,7 +764,7 @@ def git_commit_and_push():
 
 @app.route('/')
 def home():
-    return "🤖 Aether — Asistente Autónomo v4.1"
+    return "🤖 Aether — Asistente Autónomo v4.2"
 
 @app.route('/health')
 def health():
@@ -639,12 +789,7 @@ def aprender_manual():
 
 @app.route('/tareas', methods=['GET'])
 def listar_tareas():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM tareas ORDER BY prioridad DESC, creada_en")
-    tareas = cur.fetchall()
-    cur.close()
-    conn.close()
+    tareas = db_get_tareas()
     return jsonify({
         "pendientes": [t for t in tareas if t['estado'] == 'pendiente'],
         "completadas": [t for t in tareas if t['estado'] == 'completada'],
@@ -657,13 +802,7 @@ def crear_tarea():
     data = request.get_json()
     if not data or 'descripcion' not in data:
         return jsonify({"error": "Falta descripción"}), 400
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("INSERT INTO tareas (descripcion, prioridad) VALUES (%s, %s) RETURNING id", (data['descripcion'], data.get('prioridad', 0)))
-    tarea_id = cur.fetchone()["id"]
-    conn.commit()
-    cur.close()
-    conn.close()
+    tarea_id = db_add_tarea(data['descripcion'], data.get('prioridad', 0))
     return jsonify({"status": "ok", "id": tarea_id}), 201
 
 @app.route('/microtareas', methods=['GET'])
@@ -681,47 +820,21 @@ def crear_microtarea():
     data = request.get_json()
     if not data or 'descripcion' not in data:
         return jsonify({"error": "Falta descripción"}), 400
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("INSERT INTO microtareas (descripcion, estimado_minutos, prioridad) VALUES (%s, %s, %s) RETURNING id", (data['descripcion'], data.get('estimado_minutos', 5), data.get('prioridad', 0)))
-    microtarea_id = cur.fetchone()["id"]
-    conn.commit()
-    cur.close()
-    conn.close()
+    microtarea_id = db_add_microtarea(data['descripcion'], data.get('estimado_minutos', 5), data.get('prioridad', 0))
     return jsonify({"status": "ok", "id": microtarea_id}), 201
 
 @app.route('/estado', methods=['GET'])
 def estado_sistema():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM tareas")
-    tareas = cur.fetchall()
-    cur.close()
-    conn.close()
+    tareas = db_get_tareas()
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("SELECT * FROM microtareas")
     microtareas = cur.fetchall()
     cur.close()
     conn.close()
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM historial ORDER BY timestamp DESC LIMIT 5")
-    historial = cur.fetchall()
-    cur.close()
-    conn.close()
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM checkpoints WHERE activo = TRUE ORDER BY id DESC LIMIT 1")
-    checkpoint = cur.fetchone()
-    cur.close()
-    conn.close()
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM memoria_episodica ORDER BY timestamp DESC LIMIT 5")
-    memoria = cur.fetchall()
-    cur.close()
-    conn.close()
+    historial = db_get_historial(5)
+    checkpoint = db_get_checkpoint_activo()
+    memoria = db_get_memoria_episodica(5)
     return jsonify({
         "tareas": {
             "pendientes": len([t for t in tareas if t['estado'] == 'pendiente']),
@@ -748,16 +861,11 @@ def configurar_proveedor():
     api_key = data['api_key']
     if provider not in ['gemini', 'deepseek', 'openai', 'anthropic', 'groq', 'openrouter']:
         return jsonify({"error": "Provider no soportado"}), 400
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("INSERT INTO config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (f"{provider}_api_key", api_key))
+    db_set_config(f"{provider}_api_key", api_key)
     if 'model' in data:
-        cur.execute("INSERT INTO config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (f"{provider}_model", data['model']))
+        db_set_config(f"{provider}_model", data['model'])
     if 'priority' in data:
-        cur.execute("INSERT INTO config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (f"{provider}_priority", str(data['priority'])))
-    conn.commit()
-    cur.close()
-    conn.close()
+        db_set_config(f"{provider}_priority", str(data['priority']))
     return jsonify({"status": "ok", "message": f"Clave para {provider} guardada"})
 
 @app.route('/orden', methods=['POST'])
@@ -774,26 +882,14 @@ def recibir_orden():
     if orden.startswith("/tarea"):
         descripcion = orden[7:].strip()
         if descripcion:
-            conn = get_db_connection()
-            cur = conn.cursor()
-            cur.execute("INSERT INTO tareas (descripcion) VALUES (%s) RETURNING id", (descripcion,))
-            tarea_id = cur.fetchone()["id"]
-            conn.commit()
-            cur.close()
-            conn.close()
+            tarea_id = db_add_tarea(descripcion)
             return jsonify({"status": "ok", "message": f"Tarea añadida (ID {tarea_id})"})
         return jsonify({"error": "Falta descripción"}), 400
 
     elif orden.startswith("/microtarea"):
         descripcion = orden[12:].strip()
         if descripcion:
-            conn = get_db_connection()
-            cur = conn.cursor()
-            cur.execute("INSERT INTO microtareas (descripcion) VALUES (%s) RETURNING id", (descripcion,))
-            microtarea_id = cur.fetchone()["id"]
-            conn.commit()
-            cur.close()
-            conn.close()
+            microtarea_id = db_add_microtarea(descripcion)
             return jsonify({"status": "ok", "message": f"Microtarea añadida (ID {microtarea_id})"})
         return jsonify({"error": "Falta descripción"}), 400
 
@@ -802,12 +898,7 @@ def recibir_orden():
         return jsonify({"status": "ok", "message": "Ciclo de aprendizaje iniciado"})
 
     elif orden.startswith("/rollback"):
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM checkpoints WHERE activo = TRUE ORDER BY id DESC LIMIT 1")
-        checkpoint = cur.fetchone()
-        cur.close()
-        conn.close()
+        checkpoint = db_get_checkpoint_activo()
         if checkpoint:
             if restaurar_checkpoint(checkpoint["id"]):
                 return jsonify({"status": "ok", "message": f"Rollback al checkpoint {checkpoint['id']}"})
@@ -818,14 +909,9 @@ def recibir_orden():
         if len(parts) >= 3:
             provider = parts[1]
             api_key = parts[2]
-            conn = get_db_connection()
-            cur = conn.cursor()
-            cur.execute("INSERT INTO config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (f"{provider}_api_key", api_key))
+            db_set_config(f"{provider}_api_key", api_key)
             if len(parts) >= 4:
-                cur.execute("INSERT INTO config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (f"{provider}_model", parts[3]))
-            conn.commit()
-            cur.close()
-            conn.close()
+                db_set_config(f"{provider}_model", parts[3])
             return jsonify({"status": "ok", "message": f"Clave para {provider} guardada"})
         return jsonify({"error": "Formato: /config <provider> <api_key> [modelo]"}), 400
 
@@ -842,12 +928,7 @@ def recibir_orden():
 
 @app.route('/rollback', methods=['POST'])
 def rollback_manual():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM checkpoints WHERE activo = TRUE ORDER BY id DESC LIMIT 1")
-    checkpoint = cur.fetchone()
-    cur.close()
-    conn.close()
+    checkpoint = db_get_checkpoint_activo()
     if not checkpoint:
         return jsonify({"error": "No hay checkpoint disponible"}), 400
     if restaurar_checkpoint(checkpoint["id"]):
@@ -865,7 +946,7 @@ def git_manual():
 # ============================================================
 
 if __name__ == "__main__":
-    print("🚀 Iniciando Aether v4.1", file=sys.stderr)
+    print("🚀 Iniciando Aether v4.2", file=sys.stderr)
     if GITHUB_TOKEN and GITHUB_REPO_URL:
         git_inicializar()
     else:
