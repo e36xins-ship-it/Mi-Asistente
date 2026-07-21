@@ -1,75 +1,41 @@
 # app.py
 
+import random
+
 class Aether:
     def __init__(self):
         self.mejoras = []
-        self.objetivo_actual = "Mejorar el sistema en general"
-        self.conocimientos = {}
+        self.conocimientos = []
 
-    def aprender_nuevo_conocimiento(self, tema, descripcion):
-        self.conocimientos[tema] = descripcion
-        print(f"Aprendido nuevo conocimiento: {tema} - {descripcion}")
+    def aprender_nuevo_conocimiento(self, conocimiento):
+        """Aprende algo nuevo y lo añade a la lista de conocimientos"""
+        self.conocimientos.append(conocimiento)
 
-    def agregar_mejora(self, mejora):
+    def ver_conocimientos(self):
+        """Muestra todos los conocimientos aprendidos"""
+        return self.conocimientos
+
+    def mejorar_sistema(self, mejora):
+        """Añade una nueva mejora al sistema"""
         self.mejoras.append(mejora)
-        print(f"Mejora agregada: {mejora}")
 
-    def mostrar_objetivo(self):
-        print(f"Objetivo actual: {self.objetivo_actual}")
+    def ver_mejoras(self):
+        """Muestra todas las mejoras del sistema"""
+        return self.mejoras
 
-    def mostrar_mejoras(self):
-        print("Mejoras:")
-        for mejora in self.mejoras:
-            print(mejora)
-
-    def mostrar_conocimientos(self):
-        print("Conocimientos:")
-        for tema, descripcion in self.conocimientos.items():
-            print(f"{tema} - {descripcion}")
-
-    def mejorar_sistema(self):
-        print("Mejorando el sistema...")
-        # Simulación de mejora del sistema
-        import time
-        time.sleep(2)
-        print("Sistema mejorado")
+    def generar_nueva_funcionalidad(self):
+        """Genera una nueva funcionalidad aleatoria"""
+        funcionalidades = ["Reconocimiento de patrones", "Análisis de datos", "Generación de texto"]
+        return random.choice(funcionalidades)
 
 def main():
     aether = Aether()
-    aether.mostrar_objetivo()
-    aether.mostrar_mejoras()
-
-    while True:
-        print("\nOpciones:")
-        print("1. Aprender nuevo conocimiento")
-        print("2. Agregar mejora")
-        print("3. Mostrar objetivo")
-        print("4. Mostrar mejoras")
-        print("5. Mostrar conocimientos")
-        print("6. Mejorar sistema")
-        print("7. Salir")
-        
-        opcion = input("Ingrese una opción: ")
-
-        if opcion == "1":
-            tema = input("Ingrese el tema del conocimiento: ")
-            descripcion = input("Ingrese la descripción del conocimiento: ")
-            aether.aprender_nuevo_conocimiento(tema, descripcion)
-        elif opcion == "2":
-            mejora = input("Ingrese la mejora: ")
-            aether.agregar_mejora(mejora)
-        elif opcion == "3":
-            aether.mostrar_objetivo()
-        elif opcion == "4":
-            aether.mostrar_mejoras()
-        elif opcion == "5":
-            aether.mostrar_conocimientos()
-        elif opcion == "6":
-            aether.mejorar_sistema()
-        elif opcion == "7":
-            break
-        else:
-            print("Opción inválida")
+    aether.aprender_nuevo_conocimiento("Programación en Python")
+    aether.mejorar_sistema("Implementación de algoritmos de aprendizaje automático")
+    print(aether.ver_conocimientos())
+    print(aether.ver_mejoras())
+    nueva_funcionalidad = aether.generar_nueva_funcionalidad()
+    print(f"Nueva funcionalidad: {nueva_funcionalidad}")
 
 if __name__ == "__main__":
     main()
