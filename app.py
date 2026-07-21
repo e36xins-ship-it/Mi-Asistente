@@ -2,11 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Aether — Asistente Autónomo con Auto-mejora Persistente
-Versión: 4.4 (Definitiva con correcciones de Git y requirements)
-- Modificación directa de requirements.txt
-- Forzado de cambios en git commit
-- Verificación de push
-- Endpoint /debug_repo para diagnóstico
+Versión: 4.5 (Corrección de push en requirements)
 """
 
 import os
@@ -604,9 +600,13 @@ def ejecutar_microtarea(microtarea: Dict) -> bool:
                 else:
                     linea = "nueva_libreria"
             if modificar_requirements(linea):
-                db_microtarea_completada(tarea_id, exito=True)
-                print(f"✅ Microtarea {tarea_id} completada con éxito (requirements)", file=sys.stderr)
-                return True
+                # Ejecutar git_commit_and_push() para subir el cambio
+                if git_commit_and_push():
+                    db_microtarea_completada(tarea_id, exito=True)
+                    print(f"✅ Microtarea {tarea_id} completada con éxito (requirements y push)", file=sys.stderr)
+                    return True
+                else:
+                    raise Exception("git_commit_and_push() falló")
             else:
                 raise Exception("Error al modificar requirements.txt")
 
@@ -862,7 +862,7 @@ def debug_repo():
 
 @app.route('/')
 def home():
-    return "🤖 Aether — Asistente Autónomo v4.4"
+    return "🤖 Aether — Asistente Autónomo v4.5"
 
 @app.route('/health')
 def health():
@@ -1044,7 +1044,7 @@ def git_manual():
 # ============================================================
 
 if __name__ == "__main__":
-    print("🚀 Iniciando Aether v4.4", file=sys.stderr)
+    print("🚀 Iniciando Aether v4.5", file=sys.stderr)
     if GITHUB_TOKEN and GITHUB_REPO_URL:
         git_inicializar()
     else:
