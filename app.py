@@ -61,7 +61,6 @@ def init_db():
     conn = get_db_connection()
     
     if DB_TYPE == 'sqlite':
-        # SQLite: usa executescript() para múltiples sentencias
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS tareas (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -94,7 +93,6 @@ def init_db():
             );
         """)
     else:
-        # PostgreSQL
         cur = conn.cursor()
         cur.execute("""
             CREATE TABLE IF NOT EXISTS tareas (
@@ -132,11 +130,10 @@ def init_db():
     
     conn.close()
 
-# Inicializar DB al arrancar
 init_db()
 
 # ============================================
-# FUNCIONES DE ACCESO A DATOS (con conexiones locales)
+# FUNCIONES DE ACCESO A DATOS
 # ============================================
 
 def db_get_tareas():
@@ -144,12 +141,10 @@ def db_get_tareas():
     if DB_TYPE == 'postgres':
         if 'psycopg2' in sys.modules:
             cur = conn.cursor(cursor_factory=RealDictCursor)
-            cur.execute("SELECT * FROM tareas ORDER BY id")
-            tareas = cur.fetchall()
         else:
             cur = conn.cursor(row_factory=dict_row)
-            cur.execute("SELECT * FROM tareas ORDER BY id")
-            tareas = cur.fetchall()
+        cur.execute("SELECT * FROM tareas ORDER BY id")
+        tareas = cur.fetchall()
     else:
         cur = conn.cursor()
         cur.execute("SELECT * FROM tareas ORDER BY id")
@@ -218,19 +213,19 @@ def db_get_historial(limit=5):
     if DB_TYPE == 'postgres':
         if 'psycopg2' in sys.modules:
             cur.execute("SELECT * FROM historial ORDER BY timestamp DESC LIMIT %s", (limit,))
-            rows = cur.fetchall()
-            historial = [dict(row) for row in rows]
         else:
             cur.execute("SELECT * FROM historial ORDER BY timestamp DESC LIMIT %s", (limit,))
-            rows = cur.fetchall()
-            historial = [dict(row) for row in rows]
     else:
         cur.execute("SELECT * FROM historial ORDER BY timestamp DESC LIMIT ?", (limit,))
-        rows = cur.fetchall()
-        historial = [dict(row) for row in rows]
+    rows = cur.fetchall()
     cur.close()
     conn.close()
-    return historial
+    if DB_TYPE == 'postgres' and 'psycopg2' in sys.modules:
+        return [dict(row) for row in rows]
+    elif DB_TYPE == 'postgres':
+        return [dict(row) for row in rows]
+    else:
+        return [dict(row) for row in rows]
 
 def db_get_config(key):
     conn = get_db_connection()
@@ -280,28 +275,25 @@ def db_get_all_config():
     return config
 
 # ============================================
-# CONFIGURACIÓN DE ENTORNO
-# ============================================
-
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-GITHUB_REPO_URL = os.environ.get("GITHUB_REPO_URL")
-
-INTERVALO_APRENDIZAJE = 600  # 10 minutos
-CARPETA_BACKUPS = "backups"
-CARPETA_REPO = "repo"
-os.makedirs(CARPETA_BACKUPS, exist_ok=True)
-os.makedirs(CARPETA_REPO, exist_ok=True)
-
-# ============================================
-# GESTIÓN DE PROVEEDORES (desde DB)
+# GESTIÓN DE PROVEEDORES (ACTUALIZADO)
 # ============================================
 
 def get_provider_config():
-    """Carga la configuración de proveedores desde la base de datos."""
+    """Carga la configuración de proveedores desde DB o variables de entorno."""
     config = db_get_all_config()
     providers = {}
-    for provider in ['gemini', 'deepseek', 'openai', 'anthropic']:
+    
+    env_mapping = {
+        'gemini': 'GEMINI_API_KEY',
+        'deepseek': 'DEEPSEEK_API_KEY',
+        'openai': 'OPENAI_API_KEY',
+        'anthropic': 'ANTHROPIC_API_KEY'
+    }
+    
+    for provider, env_var in env_mapping.items():
         api_key = config.get(f"{provider}_api_key")
+        if not api_key:
+            api_key = os.environ.get(env_var)
         if api_key:
             if provider == 'gemini':
                 providers[provider] = {
@@ -333,10 +325,24 @@ def get_provider_config():
                     "model": config.get(f"{provider}_model", "claude-3-5-haiku-20241022"),
                     "priority": int(config.get(f"{provider}_priority", 4))
                 }
+    
     return providers
 
 # ============================================
-# FUNCIONES DE LLAMADA A MODELOS (con fallback)
+# CONFIGURACIÓN DE ENTORNO
+# ============================================
+
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+GITHUB_REPO_URL = os.environ.get("GITHUB_REPO_URL")
+
+INTERVALO_APRENDIZAJE = 600
+CARPETA_BACKUPS = "backups"
+CARPETA_REPO = "repo"
+os.makedirs(CARPETA_BACKUPS, exist_ok=True)
+os.makedirs(CARPETA_REPO, exist_ok=True)
+
+# ============================================
+# FUNCIONES DE LLAMADA A MODELOS
 # ============================================
 
 def _llamar_gemini(pregunta, provider):
@@ -372,16 +378,13 @@ def _llamar_anthropic(pregunta, provider):
     return response.content[0].text
 
 def llamar_modelo(pregunta, proveedores_preferidos=None):
-    """
-    Llama al primer proveedor disponible con fallback automático.
-    """
     providers = get_provider_config()
     if not providers:
         raise Exception("No hay proveedores configurados. Usa /config para añadir claves.")
-
+    
     if proveedores_preferidos is None:
         proveedores_preferidos = sorted(providers.keys(), key=lambda p: providers[p]['priority'])
-
+    
     ultimo_error = None
     for provider_name in proveedores_preferidos:
         if provider_name not in providers:
@@ -406,7 +409,7 @@ def llamar_modelo(pregunta, proveedores_preferidos=None):
             ultimo_error = e
             sys.stderr.flush()
             continue
-
+    
     raise Exception(f"Todos los proveedores fallaron. Último error: {ultimo_error}")
 
 # ============================================
@@ -505,15 +508,14 @@ def git_commit_and_push():
 def aprender_y_mejorar():
     print("🧠 Iniciando ciclo de aprendizaje...", file=sys.stderr)
     sys.stderr.flush()
-
-    # Obtener tareas pendientes desde DB
+    
     tareas = db_get_tareas()
     tarea_actual = None
     for t in tareas:
         if t['estado'] == 'pendiente':
             tarea_actual = t
             break
-
+    
     if tarea_actual:
         objetivo = f"Resolver la tarea: '{tarea_actual['descripcion']}'"
         print(f"📋 Tarea en curso: {tarea_actual['descripcion']}", file=sys.stderr)
@@ -521,7 +523,7 @@ def aprender_y_mejorar():
         objetivo = "Mejorar el sistema en general. Aprende algo nuevo."
         print("🧠 No hay tareas pendientes. Aprendizaje libre.", file=sys.stderr)
     sys.stderr.flush()
-
+    
     historial = db_get_historial(5)
     prompt_contexto = f"""
     Eres el asistente Aether, un sistema autónomo que se mejora a sí mismo.
@@ -530,7 +532,7 @@ def aprender_y_mejorar():
     Responde ÚNICAMENTE con un bloque de código Python completo (todo el app.py) que reemplace al actual.
     Incluye TODAS las funciones existentes y añade la nueva funcionalidad.
     """
-
+    
     try:
         respuesta = llamar_modelo(prompt_contexto)
         print(f"💡 Mejora generada", file=sys.stderr)
@@ -582,7 +584,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Asistente Gemini vivo y funcionando"
+    return "🤖 Asistente vivo y funcionando"
 
 @app.route('/health')
 def health():
@@ -646,7 +648,6 @@ def estado_sistema():
 
 @app.route('/config', methods=['POST'])
 def configurar_proveedor():
-    """Configura una clave API para un proveedor."""
     data = request.get_json()
     if not data or 'provider' not in data or 'api_key' not in data:
         return jsonify({"error": "Falta provider o api_key"}), 400
@@ -663,7 +664,6 @@ def configurar_proveedor():
 
 @app.route('/orden', methods=['POST'])
 def recibir_orden():
-    """Recibe órdenes desde PowerShell u otros."""
     data = request.get_json()
     if not data or 'orden' not in data:
         return jsonify({"error": "Falta la orden"}), 400
