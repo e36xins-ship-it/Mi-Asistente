@@ -15,9 +15,8 @@ from flask import Flask, request, jsonify
 # FALLBACK DE BASE DE DATOS
 # ============================================
 
-DB_TYPE = None  # 'postgres' o 'sqlite'
+DB_TYPE = None
 
-# Intentar importar psycopg2 (versión 2)
 try:
     import psycopg2
     from psycopg2.extras import RealDictCursor
@@ -25,41 +24,35 @@ try:
     print("✅ Usando psycopg2 (PostgreSQL)", file=sys.stderr)
 except ImportError:
     try:
-        # Intentar importar psycopg (versión 3)
         import psycopg
         from psycopg.rows import dict_row
         DB_TYPE = 'postgres'
         print("✅ Usando psycopg3 (PostgreSQL)", file=sys.stderr)
     except ImportError:
-        # Si no hay PostgreSQL, usar SQLite (incluido en Python)
         import sqlite3
         DB_TYPE = 'sqlite'
         print("⚠️ No se encontró psycopg2. Usando SQLite como fallback.", file=sys.stderr)
 
 # ============================================
-# FUNCIONES DE BASE DE DATOS (adaptativas)
+# FUNCIONES DE BASE DE DATOS
 # ============================================
 
 def get_db_connection():
-    """Devuelve una nueva conexión a la base de datos."""
     if DB_TYPE == 'postgres':
         DATABASE_URL = os.environ.get("DATABASE_URL")
         if not DATABASE_URL:
-            raise Exception("DATABASE_URL no configurada para PostgreSQL")
+            raise Exception("DATABASE_URL no configurada")
         if 'psycopg2' in sys.modules:
             return psycopg2.connect(DATABASE_URL)
         else:
             return psycopg.connect(DATABASE_URL)
     else:
-        # SQLite: crear archivo local
         conn = sqlite3.connect('data.db', check_same_thread=False)
         conn.row_factory = sqlite3.Row
         return conn
 
 def init_db():
-    """Crea las tablas si no existen (adaptado a SQLite o PostgreSQL)."""
     conn = get_db_connection()
-    
     if DB_TYPE == 'sqlite':
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS tareas (
@@ -127,7 +120,6 @@ def init_db():
         """)
         conn.commit()
         cur.close()
-    
     conn.close()
 
 init_db()
@@ -157,16 +149,10 @@ def db_add_tarea(descripcion):
     conn = get_db_connection()
     cur = conn.cursor()
     if DB_TYPE == 'postgres':
-        cur.execute(
-            "INSERT INTO tareas (descripcion) VALUES (%s) RETURNING id",
-            (descripcion,)
-        )
+        cur.execute("INSERT INTO tareas (descripcion) VALUES (%s) RETURNING id", (descripcion,))
         tarea_id = cur.fetchone()[0]
     else:
-        cur.execute(
-            "INSERT INTO tareas (descripcion) VALUES (?)",
-            (descripcion,)
-        )
+        cur.execute("INSERT INTO tareas (descripcion) VALUES (?)", (descripcion,))
         tarea_id = cur.lastrowid
     conn.commit()
     cur.close()
@@ -177,15 +163,9 @@ def db_marcar_completada(tarea_id):
     conn = get_db_connection()
     cur = conn.cursor()
     if DB_TYPE == 'postgres':
-        cur.execute(
-            "UPDATE tareas SET estado = 'completada', fecha_completada = CURRENT_TIMESTAMP WHERE id = %s",
-            (tarea_id,)
-        )
+        cur.execute("UPDATE tareas SET estado = 'completada', fecha_completada = CURRENT_TIMESTAMP WHERE id = %s", (tarea_id,))
     else:
-        cur.execute(
-            "UPDATE tareas SET estado = 'completada', fecha_completada = CURRENT_TIMESTAMP WHERE id = ?",
-            (tarea_id,)
-        )
+        cur.execute("UPDATE tareas SET estado = 'completada', fecha_completada = CURRENT_TIMESTAMP WHERE id = ?", (tarea_id,))
     conn.commit()
     cur.close()
     conn.close()
@@ -194,15 +174,9 @@ def db_guardar_historial(mejora, backup_path):
     conn = get_db_connection()
     cur = conn.cursor()
     if DB_TYPE == 'postgres':
-        cur.execute(
-            "INSERT INTO historial (mejora, backup_path) VALUES (%s, %s)",
-            (mejora[:500], backup_path)
-        )
+        cur.execute("INSERT INTO historial (mejora, backup_path) VALUES (%s, %s)", (mejora[:500], backup_path))
     else:
-        cur.execute(
-            "INSERT INTO historial (mejora, backup_path) VALUES (?, ?)",
-            (mejora[:500], backup_path)
-        )
+        cur.execute("INSERT INTO historial (mejora, backup_path) VALUES (?, ?)", (mejora[:500], backup_path))
     conn.commit()
     cur.close()
     conn.close()
@@ -213,19 +187,19 @@ def db_get_historial(limit=5):
     if DB_TYPE == 'postgres':
         if 'psycopg2' in sys.modules:
             cur.execute("SELECT * FROM historial ORDER BY timestamp DESC LIMIT %s", (limit,))
+            rows = cur.fetchall()
+            historial = [dict(row) for row in rows]
         else:
             cur.execute("SELECT * FROM historial ORDER BY timestamp DESC LIMIT %s", (limit,))
+            rows = cur.fetchall()
+            historial = [dict(row) for row in rows]
     else:
         cur.execute("SELECT * FROM historial ORDER BY timestamp DESC LIMIT ?", (limit,))
-    rows = cur.fetchall()
+        rows = cur.fetchall()
+        historial = [dict(row) for row in rows]
     cur.close()
     conn.close()
-    if DB_TYPE == 'postgres' and 'psycopg2' in sys.modules:
-        return [dict(row) for row in rows]
-    elif DB_TYPE == 'postgres':
-        return [dict(row) for row in rows]
-    else:
-        return [dict(row) for row in rows]
+    return historial
 
 def db_get_config(key):
     conn = get_db_connection()
@@ -243,15 +217,9 @@ def db_set_config(key, value):
     conn = get_db_connection()
     cur = conn.cursor()
     if DB_TYPE == 'postgres':
-        cur.execute(
-            "INSERT INTO config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-            (key, value)
-        )
+        cur.execute("INSERT INTO config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (key, value))
     else:
-        cur.execute(
-            "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
-            (key, value)
-        )
+        cur.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", (key, value))
     conn.commit()
     cur.close()
     conn.close()
@@ -275,11 +243,10 @@ def db_get_all_config():
     return config
 
 # ============================================
-# GESTIÓN DE PROVEEDORES (ACTUALIZADO)
+# GESTIÓN DE PROVEEDORES (CON GROQ)
 # ============================================
 
 def get_provider_config():
-    """Carga la configuración de proveedores desde DB o variables de entorno."""
     config = db_get_all_config()
     providers = {}
     
@@ -287,7 +254,8 @@ def get_provider_config():
         'gemini': 'GEMINI_API_KEY',
         'deepseek': 'DEEPSEEK_API_KEY',
         'openai': 'OPENAI_API_KEY',
-        'anthropic': 'ANTHROPIC_API_KEY'
+        'anthropic': 'ANTHROPIC_API_KEY',
+        'groq': 'GROQ_API_KEY'  # <-- AÑADIDO
     }
     
     for provider, env_var in env_mapping.items():
@@ -324,6 +292,14 @@ def get_provider_config():
                     "api_key": api_key,
                     "model": config.get(f"{provider}_model", "claude-3-5-haiku-20241022"),
                     "priority": int(config.get(f"{provider}_priority", 4))
+                }
+            elif provider == 'groq':  # <-- NUEVO BLOQUE
+                providers[provider] = {
+                    "type": "openai_compatible",
+                    "api_key": api_key,
+                    "base_url": "https://api.groq.com/openai/v1",
+                    "model": config.get(f"{provider}_model", "llama-3.3-70b-versatile"),
+                    "priority": int(config.get(f"{provider}_priority", 5))
                 }
     
     return providers
@@ -653,7 +629,7 @@ def configurar_proveedor():
         return jsonify({"error": "Falta provider o api_key"}), 400
     provider = data['provider']
     api_key = data['api_key']
-    if provider not in ['gemini', 'deepseek', 'openai', 'anthropic']:
+    if provider not in ['gemini', 'deepseek', 'openai', 'anthropic', 'groq']:
         return jsonify({"error": "Provider no soportado"}), 400
     db_set_config(f"{provider}_api_key", api_key)
     if 'model' in data:
