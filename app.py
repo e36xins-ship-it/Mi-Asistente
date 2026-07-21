@@ -3,60 +3,73 @@
 class Aether:
     def __init__(self):
         self.mejoras = []
+        self.objetivo_actual = "Mejorar el sistema en general"
+        self.conocimientos = {}
 
-    def aprender(self, nueva_funcionalidad):
-        """Aprende algo nuevo y lo agrega a la lista de mejoras"""
-        self.mejoras.append(nueva_funcionalidad)
+    def aprender_nuevo_conocimiento(self, tema, descripcion):
+        self.conocimientos[tema] = descripcion
+        print(f"Aprendido nuevo conocimiento: {tema} - {descripcion}")
+
+    def agregar_mejora(self, mejora):
+        self.mejoras.append(mejora)
+        print(f"Mejora agregada: {mejora}")
+
+    def mostrar_objetivo(self):
+        print(f"Objetivo actual: {self.objetivo_actual}")
 
     def mostrar_mejoras(self):
-        """Muestra la lista de mejoras actuales"""
-        print("Mejoras actuales:")
-        for i, mejora in enumerate(self.mejoras):
-            print(f"{i+1}. {mejora}")
+        print("Mejoras:")
+        for mejora in self.mejoras:
+            print(mejora)
+
+    def mostrar_conocimientos(self):
+        print("Conocimientos:")
+        for tema, descripcion in self.conocimientos.items():
+            print(f"{tema} - {descripcion}")
 
     def mejorar_sistema(self):
-        """Mejora el sistema en general"""
         print("Mejorando el sistema...")
-        # Simula la mejora del sistema
+        # Simulación de mejora del sistema
         import time
         time.sleep(2)
         print("Sistema mejorado")
 
-    def aprender_palabras(self):
-        """Aprende un nuevo conjunto de palabras"""
-        print("Aprendiendo un nuevo conjunto de palabras...")
-        # Simula el aprendizaje de un nuevo conjunto de palabras
-        import random
-        palabras = ["hola", "mundo", "python", "aprendizaje"]
-        nueva_palabra = random.choice(palabras)
-        self.aprender(nueva_palabra)
-        print(f"Aprendida la palabra: {nueva_palabra}")
-
-
 def main():
     aether = Aether()
+    aether.mostrar_objetivo()
+    aether.mostrar_mejoras()
+
     while True:
         print("\nOpciones:")
-        print("1. Aprender algo nuevo")
-        print("2. Mostrar mejoras actuales")
-        print("3. Mejorar el sistema")
-        print("4. Aprender un nuevo conjunto de palabras")
-        print("5. Salir")
+        print("1. Aprender nuevo conocimiento")
+        print("2. Agregar mejora")
+        print("3. Mostrar objetivo")
+        print("4. Mostrar mejoras")
+        print("5. Mostrar conocimientos")
+        print("6. Mejorar sistema")
+        print("7. Salir")
+        
         opcion = input("Ingrese una opción: ")
+
         if opcion == "1":
-            nueva_funcionalidad = input("Ingrese la nueva funcionalidad: ")
-            aether.aprender(nueva_funcionalidad)
+            tema = input("Ingrese el tema del conocimiento: ")
+            descripcion = input("Ingrese la descripción del conocimiento: ")
+            aether.aprender_nuevo_conocimiento(tema, descripcion)
         elif opcion == "2":
-            aether.mostrar_mejoras()
+            mejora = input("Ingrese la mejora: ")
+            aether.agregar_mejora(mejora)
         elif opcion == "3":
-            aether.mejorar_sistema()
+            aether.mostrar_objetivo()
         elif opcion == "4":
-            aether.aprender_palabras()
+            aether.mostrar_mejoras()
         elif opcion == "5":
+            aether.mostrar_conocimientos()
+        elif opcion == "6":
+            aether.mejorar_sistema()
+        elif opcion == "7":
             break
         else:
-            print("Opción inválida. Por favor, ingrese una opción válida.")
-
+            print("Opción inválida")
 
 if __name__ == "__main__":
     main()
