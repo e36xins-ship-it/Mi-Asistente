@@ -1176,4 +1176,5 @@ if __name__ == "__main__":
     threading.Thread(target=self_ping, daemon=True).start()
     threading.Thread(target=bucle_aprendizaje, daemon=True).start()
     port = int(os.environ.get("PORT", 5000))
+# TEST: Modificación directa con API
     app.run(host="0.0.0.0", port=port)
