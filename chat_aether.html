@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Chat con Aether</title>
+    <style>
+        body { font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #f5f5f5; }
+        #chat { height: 400px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; background: white; border-radius: 8px; margin-bottom: 10px; }
+        .user { text-align: right; color: blue; margin: 5px 0; }
+        .assistant { text-align: left; color: green; margin: 5px 0; }
+        #input-area { display: flex; gap: 10px; }
+        #input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ccc; }
+        #send { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 8px; cursor: pointer; }
+        #send:hover { background: #0056b3; }
+        .loading { color: gray; font-style: italic; }
+    </style>
+</head>
+<body>
+    <h1>🤖 Asistente Aether</h1>
+    <div id="chat"></div>
+    <div id="input-area">
+        <input type="text" id="input" placeholder="Escribe tu mensaje...">
+        <button id="send">Enviar</button>
+    </div>
+
+    <script>
+        const API_URL = "https://mi-asistente-1xso.onrender.com/ask";
+
+        function addMessage(text, sender) {
+            const chat = document.getElementById('chat');
+            const div = document.createElement('div');
+            div.className = sender;
+            div.textContent = text;
+            chat.appendChild(div);
+            chat.scrollTop = chat.scrollHeight;
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('input');
+            const text = input.value.trim();
+            if (!text) return;
+
+            addMessage(text, 'user');
+            input.value = '';
+            addMessage('Pensando...', 'assistant loading');
+
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pregunta: text })
+                });
+                const data = await response.json();
+                // Eliminar el mensaje de "Pensando..."
+                const chat = document.getElementById('chat');
+                const last = chat.lastElementChild;
+                if (last && last.classList.contains('loading')) {
+                    chat.removeChild(last);
+                }
+                if (data.respuesta) {
+                    addMessage(data.respuesta, 'assistant');
+                } else if (data.error) {
+                    addMessage('❌ Error: ' + data.error, 'assistant');
+                } else {
+                    addMessage('❌ Respuesta inesperada del servidor', 'assistant');
+                }
+            } catch (error) {
+                const chat = document.getElementById('chat');
+                const last = chat.lastElementChild;
+                if (last && last.classList.contains('loading')) {
+                    chat.removeChild(last);
+                }
+                addMessage('❌ Error de conexión: ' + error.message, 'assistant');
+            }
+        }
+
+        document.getElementById('send').addEventListener('click', sendMessage);
+        document.getElementById('input').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+    </script>
+</body>
+</html>
