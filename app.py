@@ -145,4 +145,5 @@ def clear_memory():
 
 if __name__ == "__main__":
 from collections import deque
+from collections import Counter
     app.run(host="0.0.0.0", port=5000, threaded=True)
