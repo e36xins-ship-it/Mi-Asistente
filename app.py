@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Aether — Asistente Autónomo con Auto-mejora Persistente
-Versión: 4.5 (Definitiva con forzado de commit)
+Versión: 4.6 (con verificación de push y fallback API)
 """
 
 import os
@@ -16,6 +16,7 @@ import subprocess
 import threading
 import tempfile
 import traceback
+import base64
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from flask import Flask, request, jsonify
@@ -701,7 +702,7 @@ def self_ping():
             print(f"⚠️ Auto-ping falló: {e}", file=sys.stderr)
 
 # ============================================================
-# GIT AUTOMÁTICO (CON FORZADO DE CAMBIO)
+# GIT AUTOMÁTICO (CON VERIFICACIÓN Y FALLBACK API)
 # ============================================================
 
 def git_inicializar():
@@ -759,7 +760,7 @@ def git_commit_and_push():
                 print(f"❌ Error copiando {archivo}: {e}", file=sys.stderr)
                 return False
 
-    # FORZAR UN CAMBIO: añadir un comentario de depuración al final de app.py en el repo
+    # FORZAR UN CAMBIO (por si no hay cambios reales)
     try:
         with open(os.path.join(repo_path, "app.py"), "a") as f:
             f.write("\n# DEBUG: Forzando commit desde Aether\n")
@@ -795,17 +796,26 @@ def git_commit_and_push():
         print(f"❌ git commit falló: {e}", file=sys.stderr)
         return False
 
-    # git push con verificación
+    # VERIFICAR EL PUSH
     print("📤 Intentando git push...", file=sys.stderr)
     try:
         push_result = subprocess.run(["git", "-C", repo_path, "push"], capture_output=True, text=True, timeout=30)
         if push_result.returncode == 0:
             print("✅ git push exitoso", file=sys.stderr)
+            # Verificación adicional: comprobar que el commit está en el remoto
+            try:
+                remote_log = subprocess.run(["git", "-C", repo_path, "log", "origin/main", "--oneline", "-n", "1"], capture_output=True, text=True, timeout=5)
+                if remote_log.stdout.strip():
+                    print(f"✅ Confirmado en remoto: {remote_log.stdout.strip()}", file=sys.stderr)
+                else:
+                    print("⚠️ No se pudo confirmar el commit en remoto", file=sys.stderr)
+            except:
+                pass
             return True
         else:
             print(f"❌ git push falló con código {push_result.returncode}", file=sys.stderr)
             print(f"❌ stderr: {push_result.stderr}", file=sys.stderr)
-            
+
             # Intentar con --force como último recurso
             print("⚠️ Intentando git push --force...", file=sys.stderr)
             force_result = subprocess.run(["git", "-C", repo_path, "push", "--force"], capture_output=True, text=True, timeout=30)
@@ -814,7 +824,47 @@ def git_commit_and_push():
                 return True
             else:
                 print(f"❌ git push --force falló: {force_result.stderr}", file=sys.stderr)
-                return False
+                
+                # ÚLTIMO RECURSO: Usar la API de GitHub para subir el archivo directamente
+                print("⚠️ Intentando subir app.py mediante API de GitHub...", file=sys.stderr)
+                try:
+                    # Leer el contenido de app.py
+                    with open(os.path.join(repo_path, "app.py"), "r") as f:
+                        contenido = f.read()
+                    contenido_b64 = base64.b64encode(contenido.encode()).decode()
+                    
+                    # Obtener el SHA del archivo actual (para actualizarlo)
+                    api_url = "https://api.github.com/repos/e36xins-ship-it/Mi-Asistente/contents/app.py"
+                    headers = {
+                        "Authorization": f"token {GITHUB_TOKEN}",
+                        "Accept": "application/vnd.github.v3+json"
+                    }
+                    # Obtener SHA actual
+                    response = requests.get(api_url, headers=headers)
+                    sha = None
+                    if response.status_code == 200:
+                        sha = response.json().get("sha")
+                    
+                    # Preparar payload para actualizar
+                    payload = {
+                        "message": mensaje,
+                        "content": contenido_b64,
+                        "branch": "main"
+                    }
+                    if sha:
+                        payload["sha"] = sha
+                    
+                    # Realizar la actualización
+                    response = requests.put(api_url, headers=headers, json=payload)
+                    if response.status_code in [200, 201]:
+                        print("✅ Archivo actualizado directamente mediante API de GitHub", file=sys.stderr)
+                        return True
+                    else:
+                        print(f"❌ API de GitHub falló: {response.status_code} - {response.text}", file=sys.stderr)
+                        return False
+                except Exception as api_e:
+                    print(f"❌ Error usando API de GitHub: {api_e}", file=sys.stderr)
+                    return False
     except Exception as e:
         print(f"❌ Error en git push: {e}", file=sys.stderr)
         return False
@@ -859,7 +909,7 @@ def debug_repo():
 
 @app.route('/')
 def home():
-    return "🤖 Aether — Asistente Autónomo v4.5"
+    return "🤖 Aether — Asistente Autónomo v4.6"
 
 @app.route('/health')
 def health():
@@ -1041,7 +1091,7 @@ def git_manual():
 # ============================================================
 
 if __name__ == "__main__":
-    print("🚀 Iniciando Aether v4.5", file=sys.stderr)
+    print("🚀 Iniciando Aether v4.6", file=sys.stderr)
     if GITHUB_TOKEN and GITHUB_REPO_URL:
         git_inicializar()
     else:
