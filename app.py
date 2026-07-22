@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Aether — Asistente Autónomo con Auto-mejora Persistente
-Versión: 4.6 (con verificación de push y fallback API)
+Versión: 4.7 (prompt mejorado para extracción de código)
 """
 
 import os
@@ -530,18 +530,25 @@ def restaurar_checkpoint(checkpoint_id: int = None) -> bool:
 # AUTO-MEJORA (Ciclo de Aprendizaje)
 # ============================================================
 
+# ============================================================
+# GENERAR MEJORA (VERSIÓN MEJORADA)
+# ============================================================
 def generar_mejora(objetivo: str, historial: List[Dict]) -> Optional[str]:
     prompt = f"""
-Eres Aether, un asistente autónomo que se mejora a sí mismo.
+Eres Aether, un asistente autónomo que se mejora a sí mismo editando su propio código.
+
 OBJETIVO ACTUAL: {objetivo}
-Mejoras anteriores: {json.dumps(historial[-5:], indent=2, default=str)}
-REGLAS DE SEGURIDAD:
-1. Mantén la estructura de servidor Flask. NO elimines rutas existentes.
-2. NO uses input() ni funciones interactivas de consola.
-3. Las mejoras deben ser incrementales y seguras.
-4. Responde ÚNICAMENTE con el código Python completo (todo el app.py).
-5. Si la tarea es editar un archivo, responde con el código completo del archivo.
-Genera una mejora que cumpla con el objetivo actual.
+
+INSTRUCCIONES ESTRICTAS:
+1. Responde ÚNICAMENTE con el código Python completo del archivo app.py.
+2. El código debe ser la versión completa y funcional del archivo, con la mejora solicitada aplicada.
+3. NO incluyas explicaciones, introducciones, ni texto fuera del código.
+4. NO uses comillas triples para otro fin que no sea el bloque de código.
+5. El bloque de código debe estar encerrado entre ```python y ```.
+
+Mejoras anteriores (para contexto): {json.dumps(historial[-5:], indent=2, default=str)}
+
+Genera el código completo de app.py con la mejora solicitada.
 """
     try:
         respuesta = llamar_modelo(prompt)
@@ -909,7 +916,7 @@ def debug_repo():
 
 @app.route('/')
 def home():
-    return "🤖 Aether — Asistente Autónomo v4.6"
+    return "🤖 Aether — Asistente Autónomo v4.7"
 
 @app.route('/health')
 def health():
@@ -1091,7 +1098,7 @@ def git_manual():
 # ============================================================
 
 if __name__ == "__main__":
-    print("🚀 Iniciando Aether v4.6", file=sys.stderr)
+    print("🚀 Iniciando Aether v4.7", file=sys.stderr)
     if GITHUB_TOKEN and GITHUB_REPO_URL:
         git_inicializar()
     else:
