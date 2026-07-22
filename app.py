@@ -117,9 +117,13 @@ def prune():
 def get_state():
     return jsonify(memory.get_all()), 200
 
-if __name__ == '__main__':
-    # Register cleanup on exit
-    signal.signal(signal.SIGINT, lambda s, f: memory.clear())
-    signal.signal(signal.SIGTERM, lambda s, f: memory.clear())
-from flask_cors import CORS
-    app.run(host='0.0.0.0', port=5000, debug=False)
+if __name__ == "__main__":
+    print("🚀 Iniciando Aether v4.6", file=sys.stderr)
+    if GITHUB_TOKEN and GITHUB_REPO_URL:
+        git_inicializar()
+    else:
+        print("⚠️ GitHub no configurado", file=sys.stderr)
+    threading.Thread(target=self_ping, daemon=True).start()
+    threading.Thread(target=bucle_aprendizaje, daemon=True).start()
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
