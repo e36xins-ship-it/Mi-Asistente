@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Aether — Asistente Autónomo con Auto-mejora Persistente
-Versión: 4.7 (prompt mejorado para extracción de código)
+Versión: 5.0 (modificación directa de app.py + API de GitHub)
 """
 
 import os
@@ -500,6 +500,73 @@ def modificar_requirements(linea):
         return False
 
 # ============================================================
+# FUNCIONES PARA MODIFICAR APP.PY DIRECTAMENTE Y SUBIR POR API
+# ============================================================
+
+def modificar_app(linea):
+    """Añade una línea al final de app.py (antes de la última línea) en el directorio de trabajo."""
+    path = os.path.join(os.getcwd(), "app.py")
+    try:
+        with open(path, "r") as f:
+            lineas = f.readlines()
+        # Insertar la línea antes de la última línea (que suele ser if __name__...)
+        if len(lineas) > 1:
+            lineas.insert(-1, f"{linea}\n")
+        else:
+            lineas.append(f"{linea}\n")
+        with open(path, "w") as f:
+            f.writelines(lineas)
+        print(f"✅ Línea '{linea}' añadida a app.py", file=sys.stderr)
+        return True
+    except Exception as e:
+        print(f"❌ Error al modificar app.py: {e}", file=sys.stderr)
+        return False
+
+def subir_app_por_api():
+    """Sube app.py a GitHub usando la API, sin depender de git push."""
+    if not GITHUB_TOKEN:
+        print("❌ GITHUB_TOKEN no configurado", file=sys.stderr)
+        return False
+    
+    try:
+        # Leer el contenido actual de app.py
+        with open(os.path.join(os.getcwd(), "app.py"), "r") as f:
+            contenido = f.read()
+        contenido_b64 = base64.b64encode(contenido.encode()).decode()
+        
+        # Obtener el SHA del archivo actual en GitHub
+        api_url = "https://api.github.com/repos/e36xins-ship-it/Mi-Asistente/contents/app.py"
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        response = requests.get(api_url, headers=headers)
+        sha = None
+        if response.status_code == 200:
+            sha = response.json().get("sha")
+        
+        # Preparar payload para actualizar
+        payload = {
+            "message": "Actualización automática de app.py desde Aether",
+            "content": contenido_b64,
+            "branch": "main"
+        }
+        if sha:
+            payload["sha"] = sha
+        
+        # Realizar la actualización
+        response = requests.put(api_url, headers=headers, json=payload)
+        if response.status_code in [200, 201]:
+            print("✅ app.py actualizado en GitHub mediante API", file=sys.stderr)
+            return True
+        else:
+            print(f"❌ API de GitHub falló: {response.status_code} - {response.text}", file=sys.stderr)
+            return False
+    except Exception as e:
+        print(f"❌ Error subiendo app.py por API: {e}", file=sys.stderr)
+        return False
+
+# ============================================================
 # CHECKPOINT Y ROLLBACK
 # ============================================================
 
@@ -530,9 +597,6 @@ def restaurar_checkpoint(checkpoint_id: int = None) -> bool:
 # AUTO-MEJORA (Ciclo de Aprendizaje)
 # ============================================================
 
-# ============================================================
-# GENERAR MEJORA (VERSIÓN MEJORADA)
-# ============================================================
 def generar_mejora(objetivo: str, historial: List[Dict]) -> Optional[str]:
     prompt = f"""
 Eres Aether, un asistente autónomo que se mejora a sí mismo editando su propio código.
@@ -593,14 +657,11 @@ def ejecutar_microtarea(microtarea: Dict) -> bool:
     try:
         # Si la tarea es añadir una línea a requirements.txt
         if "requirements.txt" in descripcion and ("añade" in descripcion.lower() or "agrega" in descripcion.lower()):
-            # Extraer el nombre de la librería (ej. "scikit-learn")
             match = re.search(r"['\"](.*?)['\"]", descripcion)
             if match:
                 linea = match.group(1)
             else:
-                # Si no hay comillas, intentar con la última palabra
                 palabras = descripcion.split()
-                # Buscar palabra que parezca una librería (sin espacios)
                 for palabra in reversed(palabras):
                     if '-' in palabra or '_' in palabra or palabra.isalnum():
                         linea = palabra
@@ -614,7 +675,24 @@ def ejecutar_microtarea(microtarea: Dict) -> bool:
             else:
                 raise Exception("Error al modificar requirements.txt")
 
-        # Si no es de requirements, seguir con el flujo normal
+        # Si la tarea es añadir algo a app.py
+        if "app.py" in descripcion and ("añade" in descripcion.lower() or "agrega" in descripcion.lower()):
+            match = re.search(r"['\"](.*?)['\"]", descripcion)
+            if match:
+                linea = match.group(1)
+            else:
+                linea = "# Comentario añadido por Aether"
+            if modificar_app(linea):
+                if subir_app_por_api():
+                    db_microtarea_completada(tarea_id, exito=True)
+                    print(f"✅ Microtarea {tarea_id} completada con éxito (app.py modificado y subido por API)", file=sys.stderr)
+                    return True
+                else:
+                    raise Exception("Error al subir app.py a GitHub")
+            else:
+                raise Exception("Error al modificar app.py")
+
+        # Si no es de requirements ni app.py, seguir con el flujo normal de generación de código
         historial = db_get_historial(5)
         respuesta = generar_mejora(descripcion, historial)
         if not respuesta:
@@ -809,7 +887,6 @@ def git_commit_and_push():
         push_result = subprocess.run(["git", "-C", repo_path, "push"], capture_output=True, text=True, timeout=30)
         if push_result.returncode == 0:
             print("✅ git push exitoso", file=sys.stderr)
-            # Verificación adicional: comprobar que el commit está en el remoto
             try:
                 remote_log = subprocess.run(["git", "-C", repo_path, "log", "origin/main", "--oneline", "-n", "1"], capture_output=True, text=True, timeout=5)
                 if remote_log.stdout.strip():
@@ -823,7 +900,6 @@ def git_commit_and_push():
             print(f"❌ git push falló con código {push_result.returncode}", file=sys.stderr)
             print(f"❌ stderr: {push_result.stderr}", file=sys.stderr)
 
-            # Intentar con --force como último recurso
             print("⚠️ Intentando git push --force...", file=sys.stderr)
             force_result = subprocess.run(["git", "-C", repo_path, "push", "--force"], capture_output=True, text=True, timeout=30)
             if force_result.returncode == 0:
@@ -832,27 +908,22 @@ def git_commit_and_push():
             else:
                 print(f"❌ git push --force falló: {force_result.stderr}", file=sys.stderr)
                 
-                # ÚLTIMO RECURSO: Usar la API de GitHub para subir el archivo directamente
                 print("⚠️ Intentando subir app.py mediante API de GitHub...", file=sys.stderr)
                 try:
-                    # Leer el contenido de app.py
                     with open(os.path.join(repo_path, "app.py"), "r") as f:
                         contenido = f.read()
                     contenido_b64 = base64.b64encode(contenido.encode()).decode()
                     
-                    # Obtener el SHA del archivo actual (para actualizarlo)
                     api_url = "https://api.github.com/repos/e36xins-ship-it/Mi-Asistente/contents/app.py"
                     headers = {
                         "Authorization": f"token {GITHUB_TOKEN}",
                         "Accept": "application/vnd.github.v3+json"
                     }
-                    # Obtener SHA actual
                     response = requests.get(api_url, headers=headers)
                     sha = None
                     if response.status_code == 200:
                         sha = response.json().get("sha")
                     
-                    # Preparar payload para actualizar
                     payload = {
                         "message": mensaje,
                         "content": contenido_b64,
@@ -861,7 +932,6 @@ def git_commit_and_push():
                     if sha:
                         payload["sha"] = sha
                     
-                    # Realizar la actualización
                     response = requests.put(api_url, headers=headers, json=payload)
                     if response.status_code in [200, 201]:
                         print("✅ Archivo actualizado directamente mediante API de GitHub", file=sys.stderr)
@@ -916,7 +986,7 @@ def debug_repo():
 
 @app.route('/')
 def home():
-    return "🤖 Aether — Asistente Autónomo v4.7"
+    return "🤖 Aether — Asistente Autónomo v5.0"
 
 @app.route('/health')
 def health():
@@ -1098,7 +1168,7 @@ def git_manual():
 # ============================================================
 
 if __name__ == "__main__":
-    print("🚀 Iniciando Aether v4.7", file=sys.stderr)
+    print("🚀 Iniciando Aether v5.0", file=sys.stderr)
     if GITHUB_TOKEN and GITHUB_REPO_URL:
         git_inicializar()
     else:
