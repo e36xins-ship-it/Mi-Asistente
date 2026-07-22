@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Aether — Asistente Autónomo con Auto-mejora Persistente
-Versión: 5.1 (con gestor de memoria y modificación directa de archivos)
+Versión: 4.2 (Completa y funcional)
 """
 
 import os
@@ -16,14 +16,9 @@ import subprocess
 import threading
 import tempfile
 import traceback
-import base64
-import signal
-import atexit
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
-from collections import deque, Counter
 from flask import Flask, request, jsonify
-from flask_cors import CORS
 import requests
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -47,221 +42,6 @@ os.makedirs(BACKUP_DIR, exist_ok=True)
 os.makedirs(REPO_DIR, exist_ok=True)
 
 # ============================================================
-# APP Y CORS
-# ============================================================
-
-app = Flask(__name__)
-CORS(app)  # Permite peticiones desde cualquier origen
-
-class CustomJSONEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        if isinstance(obj, RealDictCursor):
-            return dict(obj)
-        return super().default(obj)
-
-app.json_encoder = CustomJSONEncoder
-
-# ============================================================
-# GESTOR DE MEMORIA (AETHER)
-# ============================================================
-
-class AetherMemory:
-    """Gestor de memoria reciente con deque, TTL y persistencia JSON."""
-
-    def __init__(self, maxlen: int = 100, ttl_seconds: int = 3600, filepath: str = "aether_memory.json"):
-        self._deque = deque(maxlen=maxlen)
-        self._ttl = timedelta(seconds=ttl_seconds)
-        self._filepath = filepath
-        self._lock = threading.RLock()
-        self._load()
-        atexit.register(self._save)
-        signal.signal(signal.SIGTERM, self._signal_handler)
-        signal.signal(signal.SIGINT, self._signal_handler)
-
-    def _signal_handler(self, signum, frame):
-        self._save()
-        sys.exit(0)
-
-    def _load(self):
-        if os.path.exists(self._filepath):
-            try:
-                with open(self._filepath, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    self._deque = deque(data.get("entries", []), maxlen=self._deque.maxlen)
-            except (json.JSONDecodeError, IOError):
-                self._deque = deque(maxlen=self._deque.maxlen)
-
-    def _save(self):
-        with self._lock:
-            now = datetime.now()
-            valid_entries = [entry for entry in self._deque if now - datetime.fromisoformat(entry["timestamp"]) < self._ttl]
-            data = {"entries": valid_entries, "saved_at": now.isoformat()}
-            try:
-                with open(self._filepath, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-            except IOError:
-                pass
-
-    def add(self, content: str, metadata: dict = None):
-        entry = {
-            "content": content,
-            "timestamp": datetime.now().isoformat(),
-            "metadata": metadata or {}
-        }
-        with self._lock:
-            self._deque.append(entry)
-            self._cleanup_expired()
-
-    def get(self, limit: int = None, since: datetime = None) -> list:
-        with self._lock:
-            self._cleanup_expired()
-            entries = list(self._deque)
-            if since:
-                entries = [e for e in entries if datetime.fromisoformat(e["timestamp"]) >= since]
-            if limit:
-                entries = entries[-limit:]
-            return entries
-
-    def _cleanup_expired(self):
-        now = datetime.now()
-        while self._deque and (now - datetime.fromisoformat(self._deque[0]["timestamp"]) >= self._ttl):
-            self._deque.popleft()
-
-    def clear(self):
-        with self._lock:
-            self._deque.clear()
-            self._save()
-
-    def stats(self) -> dict:
-        with self._lock:
-            self._cleanup_expired()
-            return {
-                "count": len(self._deque),
-                "capacity": self._deque.maxlen,
-                "usage_percent": (len(self._deque) / self._deque.maxlen * 100) if self._deque.maxlen else 0,
-                "oldest_entry": self._deque[0]["timestamp"] if self._deque else None,
-                "newest_entry": self._deque[-1]["timestamp"] if self._deque else None
-            }
-
-aether = AetherMemory()
-
-# ============================================================
-# FUNCIONES DE MODIFICACIÓN DIRECTA DE ARCHIVOS (FUNCIONALES)
-# ============================================================
-
-def modificar_requirements(linea):
-    """Añade una línea al final de requirements.txt en el directorio de trabajo."""
-    path = os.path.join(os.getcwd(), "requirements.txt")
-    try:
-        with open(path, "a") as f:
-            f.write(f"\n{linea}")
-        print(f"✅ Línea '{linea}' añadida a requirements.txt", file=sys.stderr)
-        return True
-    except Exception as e:
-        print(f"❌ Error al modificar requirements.txt: {e}", file=sys.stderr)
-        return False
-
-def modificar_app(linea):
-    """Añade una línea al final de app.py (antes de la última línea) en el directorio de trabajo."""
-    path = os.path.join(os.getcwd(), "app.py")
-    try:
-        with open(path, "r") as f:
-            lineas = f.readlines()
-        if len(lineas) > 1:
-            lineas.insert(-1, f"{linea}\n")
-        else:
-            lineas.append(f"{linea}\n")
-        with open(path, "w") as f:
-            f.writelines(lineas)
-        print(f"✅ Línea '{linea}' añadida a app.py", file=sys.stderr)
-        return True
-    except Exception as e:
-        print(f"❌ Error al modificar app.py: {e}", file=sys.stderr)
-        return False
-
-def subir_app_por_api():
-    """Sube app.py a GitHub usando la API, sin depender de git push."""
-    if not GITHUB_TOKEN:
-        print("❌ GITHUB_TOKEN no configurado", file=sys.stderr)
-        return False
-    
-    try:
-        with open(os.path.join(os.getcwd(), "app.py"), "r") as f:
-            contenido = f.read()
-        contenido_b64 = base64.b64encode(contenido.encode()).decode()
-        
-        api_url = "https://api.github.com/repos/e36xins-ship-it/Mi-Asistente/contents/app.py"
-        headers = {
-            "Authorization": f"token {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github.v3+json"
-        }
-        response = requests.get(api_url, headers=headers)
-        sha = None
-        if response.status_code == 200:
-            sha = response.json().get("sha")
-        
-        payload = {
-            "message": "Actualización automática de app.py desde Aether",
-            "content": contenido_b64,
-            "branch": "main"
-        }
-        if sha:
-            payload["sha"] = sha
-        
-        response = requests.put(api_url, headers=headers, json=payload)
-        if response.status_code in [200, 201]:
-            print("✅ app.py actualizado en GitHub mediante API", file=sys.stderr)
-            return True
-        else:
-            print(f"❌ API de GitHub falló: {response.status_code} - {response.text}", file=sys.stderr)
-            return False
-    except Exception as e:
-        print(f"❌ Error subiendo app.py por API: {e}", file=sys.stderr)
-        return False
-
-def subir_requirements_por_api():
-    """Sube requirements.txt a GitHub usando la API."""
-    if not GITHUB_TOKEN:
-        print("❌ GITHUB_TOKEN no configurado", file=sys.stderr)
-        return False
-    
-    try:
-        with open(os.path.join(os.getcwd(), "requirements.txt"), "r") as f:
-            contenido = f.read()
-        contenido_b64 = base64.b64encode(contenido.encode()).decode()
-        
-        api_url = "https://api.github.com/repos/e36xins-ship-it/Mi-Asistente/contents/requirements.txt"
-        headers = {
-            "Authorization": f"token {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github.v3+json"
-        }
-        response = requests.get(api_url, headers=headers)
-        sha = None
-        if response.status_code == 200:
-            sha = response.json().get("sha")
-        
-        payload = {
-            "message": "Actualización automática de requirements.txt desde Aether",
-            "content": contenido_b64,
-            "branch": "main"
-        }
-        if sha:
-            payload["sha"] = sha
-        
-        response = requests.put(api_url, headers=headers, json=payload)
-        if response.status_code in [200, 201]:
-            print("✅ requirements.txt actualizado en GitHub mediante API", file=sys.stderr)
-            return True
-        else:
-            print(f"❌ API de GitHub falló: {response.status_code} - {response.text}", file=sys.stderr)
-            return False
-    except Exception as e:
-        print(f"❌ Error subiendo requirements.txt por API: {e}", file=sys.stderr)
-        return False
-
-# ============================================================
 # CONEXIÓN A POSTGRESQL
 # ============================================================
 
@@ -271,7 +51,6 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
-    # (Tablas ya definidas en versiones anteriores)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS tareas (
             id SERIAL PRIMARY KEY,
@@ -355,6 +134,22 @@ def init_db():
     print("✅ Base de datos inicializada", file=sys.stderr)
 
 init_db()
+
+# ============================================================
+# APP Y JSON ENCODER
+# ============================================================
+
+app = Flask(__name__)
+
+class CustomJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        if isinstance(obj, RealDictCursor):
+            return dict(obj)
+        return super().default(obj)
+
+app.json_encoder = CustomJSONEncoder
 
 # ============================================================
 # FUNCIONES DE BASE DE DATOS
@@ -538,7 +333,7 @@ def db_get_memoria_episodica(limit=10):
     return result
 
 # ============================================================
-# GESTIÓN DE PROVEEDORES (MULTI-LLM)
+# GESTIÓN DE PROVEEDORES
 # ============================================================
 
 def get_provider_config():
@@ -578,7 +373,7 @@ def get_provider_config():
     return providers
 
 # ============================================================
-# LLAMADA A MODELOS
+# LLAMADA A MODELOS (OpenRouter corregido)
 # ============================================================
 
 def _llamar_openrouter(pregunta, provider):
@@ -720,20 +515,16 @@ def restaurar_checkpoint(checkpoint_id: int = None) -> bool:
 
 def generar_mejora(objetivo: str, historial: List[Dict]) -> Optional[str]:
     prompt = f"""
-Eres Aether, un asistente autónomo que se mejora a sí mismo editando su propio código.
-
+Eres Aether, un asistente autónomo que se mejora a sí mismo.
 OBJETIVO ACTUAL: {objetivo}
-
-INSTRUCCIONES ESTRICTAS:
-1. Responde ÚNICAMENTE con el código Python completo del archivo app.py.
-2. El código debe ser la versión completa y funcional del archivo, con la mejora solicitada aplicada.
-3. NO incluyas explicaciones, introducciones, ni texto fuera del código.
-4. NO uses comillas triples para otro fin que no sea el bloque de código.
-5. El bloque de código debe estar encerrado entre ```python y ```.
-
-Mejoras anteriores (para contexto): {json.dumps(historial[-5:], indent=2, default=str)}
-
-Genera el código completo de app.py con la mejora solicitada.
+Mejoras anteriores: {json.dumps(historial[-5:], indent=2, default=str)}
+REGLAS DE SEGURIDAD:
+1. Mantén la estructura de servidor Flask. NO elimines rutas existentes.
+2. NO uses input() ni funciones interactivas de consola.
+3. Las mejoras deben ser incrementales y seguras.
+4. Responde ÚNICAMENTE con el código Python completo (todo el app.py).
+5. Si la tarea es editar un archivo, responde con el código completo del archivo.
+Genera una mejora que cumpla con el objetivo actual.
 """
     try:
         respuesta = llamar_modelo(prompt)
@@ -776,47 +567,6 @@ def ejecutar_microtarea(microtarea: Dict) -> bool:
     print(f"🔧 Ejecutando microtarea {tarea_id}: {descripcion}", file=sys.stderr)
     db_microtarea_iniciada(tarea_id)
     try:
-        # Si la tarea es añadir una línea a requirements.txt
-        if "requirements.txt" in descripcion and ("añade" in descripcion.lower() or "agrega" in descripcion.lower()):
-            match = re.search(r"['\"](.*?)['\"]", descripcion)
-            if match:
-                linea = match.group(1)
-            else:
-                palabras = descripcion.split()
-                for palabra in reversed(palabras):
-                    if '-' in palabra or '_' in palabra or palabra.isalnum():
-                        linea = palabra
-                        break
-                else:
-                    linea = "nueva_libreria"
-            if modificar_requirements(linea):
-                if subir_requirements_por_api():
-                    db_microtarea_completada(tarea_id, exito=True)
-                    print(f"✅ Microtarea {tarea_id} completada con éxito (requirements)", file=sys.stderr)
-                    return True
-                else:
-                    raise Exception("Error al subir requirements.txt a GitHub")
-            else:
-                raise Exception("Error al modificar requirements.txt")
-
-        # Si la tarea es añadir algo a app.py
-        if "app.py" in descripcion and ("añade" in descripcion.lower() or "agrega" in descripcion.lower()):
-            match = re.search(r"['\"](.*?)['\"]", descripcion)
-            if match:
-                linea = match.group(1)
-            else:
-                linea = "# Comentario añadido por Aether"
-            if modificar_app(linea):
-                if subir_app_por_api():
-                    db_microtarea_completada(tarea_id, exito=True)
-                    print(f"✅ Microtarea {tarea_id} completada con éxito (app.py)", file=sys.stderr)
-                    return True
-                else:
-                    raise Exception("Error al subir app.py a GitHub")
-            else:
-                raise Exception("Error al modificar app.py")
-
-        # Si no es de requirements ni app.py, seguir con el flujo normal de generación de código
         historial = db_get_historial(5)
         respuesta = generar_mejora(descripcion, historial)
         if not respuesta:
@@ -911,7 +661,7 @@ def self_ping():
             print(f"⚠️ Auto-ping falló: {e}", file=sys.stderr)
 
 # ============================================================
-# GIT AUTOMÁTICO (CON FALLBACK API)
+# GIT AUTOMÁTICO (REESCRITO CON SUBPROCESS)
 # ============================================================
 
 def git_inicializar():
@@ -938,10 +688,6 @@ def git_inicializar():
             return False
 
 def git_commit_and_push():
-    # Si la API funciona, usarla directamente
-    if subir_app_por_api():
-        return True
-    # Si falla, intentar con git push (legado)
     if not GITHUB_TOKEN or not GITHUB_REPO_URL:
         print("⚠️ GitHub no configurado", file=sys.stderr)
         return False
@@ -951,23 +697,66 @@ def git_commit_and_push():
         print("❌ Repositorio no inicializado", file=sys.stderr)
         return False
 
+    # Configurar usuario de Git
     try:
         subprocess.run(["git", "-C", repo_path, "config", "user.email", "aether@asistente.local"], check=True, capture_output=True)
         subprocess.run(["git", "-C", repo_path, "config", "user.name", "Aether Asistente"], check=True, capture_output=True)
+        print("✅ Usuario de Git configurado", file=sys.stderr)
+    except Exception as e:
+        print(f"❌ Error configurando usuario: {e}", file=sys.stderr)
+        return False
+
+    # Copiar app.py
+    try:
         shutil.copy2(__file__, os.path.join(repo_path, "app.py"))
-        subprocess.run(["git", "-C", repo_path, "add", "."], check=True, capture_output=True)
+        print(f"📁 app.py copiado a {repo_path}", file=sys.stderr)
+    except Exception as e:
+        print(f"❌ Error copiando app.py: {e}", file=sys.stderr)
+        return False
+
+    # git add
+    try:
+        subprocess.run(["git", "-C", repo_path, "add", "app.py"], check=True, capture_output=True)
+        print("✅ git add app.py", file=sys.stderr)
+    except Exception as e:
+        print(f"❌ git add falló: {e}", file=sys.stderr)
+        return False
+
+    # git status
+    try:
         result = subprocess.run(["git", "-C", repo_path, "status", "--porcelain"], check=True, capture_output=True, text=True)
         if not result.stdout.strip():
             print("ℹ️ No hay cambios para commitear", file=sys.stderr)
             return True
-        mensaje = f"Auto-mejora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        print(f"📊 git status: {result.stdout.strip()}", file=sys.stderr)
+    except Exception as e:
+        print(f"❌ git status falló: {e}", file=sys.stderr)
+        return False
+
+    # git commit
+    mensaje = f"Auto-mejora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    try:
         subprocess.run(["git", "-C", repo_path, "commit", "-m", mensaje], check=True, capture_output=True)
+        print(f"✅ git commit: {mensaje}", file=sys.stderr)
+    except Exception as e:
+        print(f"❌ git commit falló: {e}", file=sys.stderr)
+        return False
+
+    # git push (con force si falla)
+    try:
+        subprocess.run(["git", "-C", repo_path, "push", "--set-upstream", "origin", "main"], check=False, capture_output=True)
         subprocess.run(["git", "-C", repo_path, "push"], check=True, capture_output=True)
-        print("✅ git push exitoso", file=sys.stderr)
+        print("✅ git push", file=sys.stderr)
         return True
     except Exception as e:
-        print(f"❌ Error en git push: {e}", file=sys.stderr)
-        return False
+        print(f"⚠️ git push falló: {e}. Intentando --force...", file=sys.stderr)
+        try:
+            subprocess.run(["git", "-C", repo_path, "push", "--force"], check=True, capture_output=True)
+            print("✅ git push --force", file=sys.stderr)
+            return True
+        except Exception as e2:
+            print(f"❌ git push --force falló: {e2}", file=sys.stderr)
+            return False
 
 # ============================================================
 # ENDPOINTS DE LA API
@@ -975,7 +764,7 @@ def git_commit_and_push():
 
 @app.route('/')
 def home():
-    return "🤖 Aether — Asistente Autónomo v5.1"
+    return "🤖 Aether — Asistente Autónomo v4.2"
 
 @app.route('/health')
 def health():
@@ -986,28 +775,12 @@ def ask():
     try:
         data = request.get_json()
         if not data or 'pregunta' not in data:
-            return jsonify({'error': 'Falta pregunta'}), 400
-
+            return jsonify({"error": "Falta pregunta"}), 400
         pregunta = data['pregunta']
-
-        # Obtener memoria reciente
-        memoria = aether.get(limit=5)
-        contexto = ''
-        if memoria:
-            contexto = 'Contexto de memoria reciente:\n' + '\n'.join([m['content'] for m in memoria])
-
-        prompt_completo = pregunta
-        if contexto:
-            prompt_completo = f'{contexto}\n\nPregunta: {pregunta}'
-
-        respuesta = llamar_modelo(prompt_completo)
-
-        aether.add(f'Pregunta: {pregunta}\nRespuesta: {respuesta}')
-
-        return jsonify({'respuesta': respuesta})
-
+        respuesta = llamar_modelo(pregunta)
+        return jsonify({"respuesta": respuesta})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/aprender', methods=['POST'])
 def aprender_manual():
@@ -1168,37 +941,12 @@ def git_manual():
         return jsonify({"status": "ok", "message": "Git push ejecutado con éxito"})
     return jsonify({"error": "Git push falló"}), 500
 
-@app.route('/memory', methods=["POST"])
-def add_memory():
-    data = request.get_json()
-    if not data or "content" not in data:
-        return jsonify({"error": "Se requiere 'content'"}), 400
-    aether.add(data["content"], data.get("metadata"))
-    return jsonify({"status": "ok"}), 201
-
-@app.route('/memory', methods=["GET"])
-def get_memory():
-    limit = request.args.get("limit", type=int)
-    since_str = request.args.get("since")
-    since = datetime.fromisoformat(since_str) if since_str else None
-    entries = aether.get(limit=limit, since=since)
-    return jsonify(entries)
-
-@app.route('/memory/stats', methods=["GET"])
-def memory_stats():
-    return jsonify(aether.stats())
-
-@app.route('/memory/clear', methods=["POST"])
-def clear_memory():
-    aether.clear()
-    return jsonify({"status": "cleared"})
-
 # ============================================================
 # INICIO DEL SERVICIO
 # ============================================================
 
 if __name__ == "__main__":
-    print("🚀 Iniciando Aether v5.1", file=sys.stderr)
+    print("🚀 Iniciando Aether v4.2", file=sys.stderr)
     if GITHUB_TOKEN and GITHUB_REPO_URL:
         git_inicializar()
     else:
