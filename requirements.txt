@@ -9,3 +9,4 @@ numpy
 scikit-learn
 flask-cors
 chromadb
+app.py
