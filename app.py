@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Aether — Asistente Autónomo con Auto-mejora Persistente
-Versión: 4.2 (Completa y funcional)
+Versión: 4.6 (con verificación de push y fallback API)
 """
 
 import os
@@ -16,6 +16,7 @@ import subprocess
 import threading
 import tempfile
 import traceback
+import base64
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from flask import Flask, request, jsonify
@@ -373,7 +374,7 @@ def get_provider_config():
     return providers
 
 # ============================================================
-# LLAMADA A MODELOS (OpenRouter corregido)
+# LLAMADA A MODELOS
 # ============================================================
 
 def _llamar_openrouter(pregunta, provider):
@@ -483,6 +484,120 @@ def validar_codigo_completo(codigo: str) -> Tuple[bool, str, Optional[str]]:
     return True, "Código válido", None
 
 # ============================================================
+# FUNCIONES DE MODIFICACIÓN DIRECTA (QUE FUNCIONABAN)
+# ============================================================
+
+def modificar_requirements(linea):
+    """Añade una línea al final de requirements.txt en el directorio de trabajo."""
+    path = os.path.join(os.getcwd(), "requirements.txt")
+    try:
+        with open(path, "a") as f:
+            f.write(f"\n{linea}")
+        print(f"✅ Línea '{linea}' añadida a requirements.txt", file=sys.stderr)
+        return True
+    except Exception as e:
+        print(f"❌ Error al modificar requirements.txt: {e}", file=sys.stderr)
+        return False
+
+def modificar_app(linea):
+    """Añade una línea al final de app.py (antes de la última línea) en el directorio de trabajo."""
+    path = os.path.join(os.getcwd(), "app.py")
+    try:
+        with open(path, "r") as f:
+            lineas = f.readlines()
+        if len(lineas) > 1:
+            lineas.insert(-1, f"{linea}\n")
+        else:
+            lineas.append(f"{linea}\n")
+        with open(path, "w") as f:
+            f.writelines(lineas)
+        print(f"✅ Línea '{linea}' añadida a app.py", file=sys.stderr)
+        return True
+    except Exception as e:
+        print(f"❌ Error al modificar app.py: {e}", file=sys.stderr)
+        return False
+
+def subir_app_por_api():
+    """Sube app.py a GitHub usando la API, sin depender de git push."""
+    if not GITHUB_TOKEN:
+        print("❌ GITHUB_TOKEN no configurado", file=sys.stderr)
+        return False
+    
+    try:
+        with open(os.path.join(os.getcwd(), "app.py"), "r") as f:
+            contenido = f.read()
+        contenido_b64 = base64.b64encode(contenido.encode()).decode()
+        
+        api_url = "https://api.github.com/repos/e36xins-ship-it/Mi-Asistente/contents/app.py"
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        response = requests.get(api_url, headers=headers)
+        sha = None
+        if response.status_code == 200:
+            sha = response.json().get("sha")
+        
+        payload = {
+            "message": "Actualización automática de app.py desde Aether",
+            "content": contenido_b64,
+            "branch": "main"
+        }
+        if sha:
+            payload["sha"] = sha
+        
+        response = requests.put(api_url, headers=headers, json=payload)
+        if response.status_code in [200, 201]:
+            print("✅ app.py actualizado en GitHub mediante API", file=sys.stderr)
+            return True
+        else:
+            print(f"❌ API de GitHub falló: {response.status_code} - {response.text}", file=sys.stderr)
+            return False
+    except Exception as e:
+        print(f"❌ Error subiendo app.py por API: {e}", file=sys.stderr)
+        return False
+
+def subir_requirements_por_api():
+    """Sube requirements.txt a GitHub usando la API."""
+    if not GITHUB_TOKEN:
+        print("❌ GITHUB_TOKEN no configurado", file=sys.stderr)
+        return False
+    
+    try:
+        with open(os.path.join(os.getcwd(), "requirements.txt"), "r") as f:
+            contenido = f.read()
+        contenido_b64 = base64.b64encode(contenido.encode()).decode()
+        
+        api_url = "https://api.github.com/repos/e36xins-ship-it/Mi-Asistente/contents/requirements.txt"
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        response = requests.get(api_url, headers=headers)
+        sha = None
+        if response.status_code == 200:
+            sha = response.json().get("sha")
+        
+        payload = {
+            "message": "Actualización automática de requirements.txt desde Aether",
+            "content": contenido_b64,
+            "branch": "main"
+        }
+        if sha:
+            payload["sha"] = sha
+        
+        response = requests.put(api_url, headers=headers, json=payload)
+        if response.status_code in [200, 201]:
+            print("✅ requirements.txt actualizado en GitHub mediante API", file=sys.stderr)
+            return True
+        else:
+            print(f"❌ API de GitHub falló: {response.status_code} - {response.text}", file=sys.stderr)
+            return False
+    except Exception as e:
+        print(f"❌ Error subiendo requirements.txt por API: {e}", file=sys.stderr)
+        return False
+
+# ============================================================
 # CHECKPOINT Y ROLLBACK
 # ============================================================
 
@@ -515,16 +630,20 @@ def restaurar_checkpoint(checkpoint_id: int = None) -> bool:
 
 def generar_mejora(objetivo: str, historial: List[Dict]) -> Optional[str]:
     prompt = f"""
-Eres Aether, un asistente autónomo que se mejora a sí mismo.
+Eres Aether, un asistente autónomo que se mejora a sí mismo editando su propio código.
+
 OBJETIVO ACTUAL: {objetivo}
-Mejoras anteriores: {json.dumps(historial[-5:], indent=2, default=str)}
-REGLAS DE SEGURIDAD:
-1. Mantén la estructura de servidor Flask. NO elimines rutas existentes.
-2. NO uses input() ni funciones interactivas de consola.
-3. Las mejoras deben ser incrementales y seguras.
-4. Responde ÚNICAMENTE con el código Python completo (todo el app.py).
-5. Si la tarea es editar un archivo, responde con el código completo del archivo.
-Genera una mejora que cumpla con el objetivo actual.
+
+INSTRUCCIONES ESTRICTAS:
+1. Responde ÚNICAMENTE con el código Python completo del archivo app.py.
+2. El código debe ser la versión completa y funcional del archivo, con la mejora solicitada aplicada.
+3. NO incluyas explicaciones, introducciones, ni texto fuera del código.
+4. NO uses comillas triples para otro fin que no sea el bloque de código.
+5. El bloque de código debe estar encerrado entre ```python y ```.
+
+Mejoras anteriores (para contexto): {json.dumps(historial[-5:], indent=2, default=str)}
+
+Genera el código completo de app.py con la mejora solicitada.
 """
     try:
         respuesta = llamar_modelo(prompt)
@@ -567,6 +686,47 @@ def ejecutar_microtarea(microtarea: Dict) -> bool:
     print(f"🔧 Ejecutando microtarea {tarea_id}: {descripcion}", file=sys.stderr)
     db_microtarea_iniciada(tarea_id)
     try:
+        # Si la tarea es añadir una línea a requirements.txt
+        if "requirements.txt" in descripcion and ("añade" in descripcion.lower() or "agrega" in descripcion.lower()):
+            match = re.search(r"['\"](.*?)['\"]", descripcion)
+            if match:
+                linea = match.group(1)
+            else:
+                palabras = descripcion.split()
+                for palabra in reversed(palabras):
+                    if '-' in palabra or '_' in palabra or palabra.isalnum():
+                        linea = palabra
+                        break
+                else:
+                    linea = "nueva_libreria"
+            if modificar_requirements(linea):
+                if subir_requirements_por_api():
+                    db_microtarea_completada(tarea_id, exito=True)
+                    print(f"✅ Microtarea {tarea_id} completada con éxito (requirements)", file=sys.stderr)
+                    return True
+                else:
+                    raise Exception("Error al subir requirements.txt a GitHub")
+            else:
+                raise Exception("Error al modificar requirements.txt")
+
+        # Si la tarea es añadir algo a app.py
+        if "app.py" in descripcion and ("añade" in descripcion.lower() or "agrega" in descripcion.lower()):
+            match = re.search(r"['\"](.*?)['\"]", descripcion)
+            if match:
+                linea = match.group(1)
+            else:
+                linea = "# Comentario añadido por Aether"
+            if modificar_app(linea):
+                if subir_app_por_api():
+                    db_microtarea_completada(tarea_id, exito=True)
+                    print(f"✅ Microtarea {tarea_id} completada con éxito (app.py)", file=sys.stderr)
+                    return True
+                else:
+                    raise Exception("Error al subir app.py a GitHub")
+            else:
+                raise Exception("Error al modificar app.py")
+
+        # Si no es de requirements ni app.py, seguir con el flujo normal de generación de código
         historial = db_get_historial(5)
         respuesta = generar_mejora(descripcion, historial)
         if not respuesta:
@@ -661,7 +821,7 @@ def self_ping():
             print(f"⚠️ Auto-ping falló: {e}", file=sys.stderr)
 
 # ============================================================
-# GIT AUTOMÁTICO (REESCRITO CON SUBPROCESS)
+# GIT AUTOMÁTICO (CON VERIFICACIÓN Y FALLBACK API)
 # ============================================================
 
 def git_inicializar():
@@ -688,6 +848,10 @@ def git_inicializar():
             return False
 
 def git_commit_and_push():
+    # Si la API funciona, usarla directamente
+    if subir_app_por_api():
+        return True
+    # Si falla, intentar con git push (legado)
     if not GITHUB_TOKEN or not GITHUB_REPO_URL:
         print("⚠️ GitHub no configurado", file=sys.stderr)
         return False
@@ -697,66 +861,23 @@ def git_commit_and_push():
         print("❌ Repositorio no inicializado", file=sys.stderr)
         return False
 
-    # Configurar usuario de Git
     try:
         subprocess.run(["git", "-C", repo_path, "config", "user.email", "aether@asistente.local"], check=True, capture_output=True)
         subprocess.run(["git", "-C", repo_path, "config", "user.name", "Aether Asistente"], check=True, capture_output=True)
-        print("✅ Usuario de Git configurado", file=sys.stderr)
-    except Exception as e:
-        print(f"❌ Error configurando usuario: {e}", file=sys.stderr)
-        return False
-
-    # Copiar app.py
-    try:
         shutil.copy2(__file__, os.path.join(repo_path, "app.py"))
-        print(f"📁 app.py copiado a {repo_path}", file=sys.stderr)
-    except Exception as e:
-        print(f"❌ Error copiando app.py: {e}", file=sys.stderr)
-        return False
-
-    # git add
-    try:
-        subprocess.run(["git", "-C", repo_path, "add", "app.py"], check=True, capture_output=True)
-        print("✅ git add app.py", file=sys.stderr)
-    except Exception as e:
-        print(f"❌ git add falló: {e}", file=sys.stderr)
-        return False
-
-    # git status
-    try:
+        subprocess.run(["git", "-C", repo_path, "add", "."], check=True, capture_output=True)
         result = subprocess.run(["git", "-C", repo_path, "status", "--porcelain"], check=True, capture_output=True, text=True)
         if not result.stdout.strip():
             print("ℹ️ No hay cambios para commitear", file=sys.stderr)
             return True
-        print(f"📊 git status: {result.stdout.strip()}", file=sys.stderr)
-    except Exception as e:
-        print(f"❌ git status falló: {e}", file=sys.stderr)
-        return False
-
-    # git commit
-    mensaje = f"Auto-mejora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    try:
+        mensaje = f"Auto-mejora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         subprocess.run(["git", "-C", repo_path, "commit", "-m", mensaje], check=True, capture_output=True)
-        print(f"✅ git commit: {mensaje}", file=sys.stderr)
-    except Exception as e:
-        print(f"❌ git commit falló: {e}", file=sys.stderr)
-        return False
-
-    # git push (con force si falla)
-    try:
-        subprocess.run(["git", "-C", repo_path, "push", "--set-upstream", "origin", "main"], check=False, capture_output=True)
         subprocess.run(["git", "-C", repo_path, "push"], check=True, capture_output=True)
-        print("✅ git push", file=sys.stderr)
+        print("✅ git push exitoso", file=sys.stderr)
         return True
     except Exception as e:
-        print(f"⚠️ git push falló: {e}. Intentando --force...", file=sys.stderr)
-        try:
-            subprocess.run(["git", "-C", repo_path, "push", "--force"], check=True, capture_output=True)
-            print("✅ git push --force", file=sys.stderr)
-            return True
-        except Exception as e2:
-            print(f"❌ git push --force falló: {e2}", file=sys.stderr)
-            return False
+        print(f"❌ Error en git push: {e}", file=sys.stderr)
+        return False
 
 # ============================================================
 # ENDPOINTS DE LA API
@@ -764,7 +885,7 @@ def git_commit_and_push():
 
 @app.route('/')
 def home():
-    return "🤖 Aether — Asistente Autónomo v4.2"
+    return "🤖 Aether — Asistente Autónomo v4.6"
 
 @app.route('/health')
 def health():
@@ -942,11 +1063,45 @@ def git_manual():
     return jsonify({"error": "Git push falló"}), 500
 
 # ============================================================
+# ENDPOINT DE DIAGNÓSTICO DEL REPOSITORIO
+# ============================================================
+
+@app.route('/debug_repo', methods=['GET'])
+def debug_repo():
+    repo_path = os.path.join(os.getcwd(), REPO_DIR)
+    result = {
+        "repo_path": repo_path,
+        "exists": os.path.exists(repo_path),
+        "is_git": os.path.exists(os.path.join(repo_path, ".git")),
+        "git_remote": "",
+        "git_status": "",
+        "git_log": "",
+        "app_py_exists": os.path.exists(os.path.join(repo_path, "app.py")),
+        "requirements_exists": os.path.exists(os.path.join(repo_path, "requirements.txt")),
+    }
+    try:
+        remote = subprocess.run(["git", "-C", repo_path, "remote", "-v"], capture_output=True, text=True, timeout=5)
+        result["git_remote"] = remote.stdout
+    except Exception as e:
+        result["git_remote_error"] = str(e)
+    try:
+        status = subprocess.run(["git", "-C", repo_path, "status", "--porcelain"], capture_output=True, text=True, timeout=5)
+        result["git_status"] = status.stdout
+    except Exception as e:
+        result["git_status_error"] = str(e)
+    try:
+        log = subprocess.run(["git", "-C", repo_path, "log", "--oneline", "-n", "5"], capture_output=True, text=True, timeout=5)
+        result["git_log"] = log.stdout
+    except Exception as e:
+        result["git_log_error"] = str(e)
+    return jsonify(result)
+
+# ============================================================
 # INICIO DEL SERVICIO
 # ============================================================
 
 if __name__ == "__main__":
-    print("🚀 Iniciando Aether v4.2", file=sys.stderr)
+    print("🚀 Iniciando Aether v4.6", file=sys.stderr)
     if GITHUB_TOKEN and GITHUB_REPO_URL:
         git_inicializar()
     else:
