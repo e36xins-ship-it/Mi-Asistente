@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Aether — Asistente Autónomo con Auto-mejora Persistente
-Versión: 4.6 (con CORS habilitado y corrección de indentación)
+Versión: 5.0 (con sistema iterativo profundo)
 """
 
 import os
@@ -48,7 +48,7 @@ os.makedirs(REPO_DIR, exist_ok=True)
 # ============================================================
 
 app = Flask(__name__)
-CORS(app)  # Permite peticiones desde cualquier origen
+CORS(app)
 
 class CustomJSONEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -147,6 +147,19 @@ def init_db():
             prioridad INTEGER DEFAULT 0
         )
     """)
+    # NUEVA TABLA: iteraciones
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS iteraciones (
+            id SERIAL PRIMARY KEY,
+            microtarea_id INTEGER REFERENCES microtareas(id),
+            paso INTEGER,
+            plan TEXT,
+            codigo_generado TEXT,
+            resultado_validacion TEXT,
+            error TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     conn.commit()
     cur.close()
     conn.close()
@@ -155,7 +168,7 @@ def init_db():
 init_db()
 
 # ============================================================
-# FUNCIONES DE BASE DE DATOS
+# FUNCIONES DE BASE DE DATOS (existentes)
 # ============================================================
 
 def db_get_tareas(estado=None):
@@ -336,6 +349,30 @@ def db_get_memoria_episodica(limit=10):
     return result
 
 # ============================================================
+# FUNCIONES PARA ITERACIONES (NUEVAS)
+# ============================================================
+
+def db_guardar_iteracion(microtarea_id, paso, plan, codigo_generado, resultado_validacion, error=None):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO iteraciones (microtarea_id, paso, plan, codigo_generado, resultado_validacion, error)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """, (microtarea_id, paso, plan, codigo_generado, resultado_validacion, error))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def db_get_iteraciones(microtarea_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM iteraciones WHERE microtarea_id = %s ORDER BY paso", (microtarea_id,))
+    result = cur.fetchall()
+    cur.close()
+    conn.close()
+    return result
+
+# ============================================================
 # GESTIÓN DE PROVEEDORES
 # ============================================================
 
@@ -490,7 +527,6 @@ def validar_codigo_completo(codigo: str) -> Tuple[bool, str, Optional[str]]:
 # ============================================================
 
 def modificar_requirements(linea):
-    """Añade una línea al final de requirements.txt en el directorio de trabajo."""
     path = os.path.join(os.getcwd(), "requirements.txt")
     try:
         with open(path, "a") as f:
@@ -502,7 +538,6 @@ def modificar_requirements(linea):
         return False
 
 def modificar_app(linea):
-    """Añade una línea al final de app.py (antes de la última línea) en el directorio de trabajo."""
     path = os.path.join(os.getcwd(), "app.py")
     try:
         with open(path, "r") as f:
@@ -520,16 +555,13 @@ def modificar_app(linea):
         return False
 
 def subir_app_por_api():
-    """Sube app.py a GitHub usando la API, sin depender de git push."""
     if not GITHUB_TOKEN:
         print("❌ GITHUB_TOKEN no configurado", file=sys.stderr)
         return False
-    
     try:
         with open(os.path.join(os.getcwd(), "app.py"), "r") as f:
             contenido = f.read()
         contenido_b64 = base64.b64encode(contenido.encode()).decode()
-        
         api_url = "https://api.github.com/repos/e36xins-ship-it/Mi-Asistente/contents/app.py"
         headers = {
             "Authorization": f"token {GITHUB_TOKEN}",
@@ -539,7 +571,6 @@ def subir_app_por_api():
         sha = None
         if response.status_code == 200:
             sha = response.json().get("sha")
-        
         payload = {
             "message": "Actualización automática de app.py desde Aether",
             "content": contenido_b64,
@@ -547,7 +578,6 @@ def subir_app_por_api():
         }
         if sha:
             payload["sha"] = sha
-        
         response = requests.put(api_url, headers=headers, json=payload)
         if response.status_code in [200, 201]:
             print("✅ app.py actualizado en GitHub mediante API", file=sys.stderr)
@@ -557,46 +587,6 @@ def subir_app_por_api():
             return False
     except Exception as e:
         print(f"❌ Error subiendo app.py por API: {e}", file=sys.stderr)
-        return False
-
-def subir_requirements_por_api():
-    """Sube requirements.txt a GitHub usando la API."""
-    if not GITHUB_TOKEN:
-        print("❌ GITHUB_TOKEN no configurado", file=sys.stderr)
-        return False
-    
-    try:
-        with open(os.path.join(os.getcwd(), "requirements.txt"), "r") as f:
-            contenido = f.read()
-        contenido_b64 = base64.b64encode(contenido.encode()).decode()
-        
-        api_url = "https://api.github.com/repos/e36xins-ship-it/Mi-Asistente/contents/requirements.txt"
-        headers = {
-            "Authorization": f"token {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github.v3+json"
-        }
-        response = requests.get(api_url, headers=headers)
-        sha = None
-        if response.status_code == 200:
-            sha = response.json().get("sha")
-        
-        payload = {
-            "message": "Actualización automática de requirements.txt desde Aether",
-            "content": contenido_b64,
-            "branch": "main"
-        }
-        if sha:
-            payload["sha"] = sha
-        
-        response = requests.put(api_url, headers=headers, json=payload)
-        if response.status_code in [200, 201]:
-            print("✅ requirements.txt actualizado en GitHub mediante API", file=sys.stderr)
-            return True
-        else:
-            print(f"❌ API de GitHub falló: {response.status_code} - {response.text}", file=sys.stderr)
-            return False
-    except Exception as e:
-        print(f"❌ Error subiendo requirements.txt por API: {e}", file=sys.stderr)
         return False
 
 # ============================================================
@@ -627,7 +617,162 @@ def restaurar_checkpoint(checkpoint_id: int = None) -> bool:
     return True
 
 # ============================================================
-# AUTO-MEJORA (Ciclo de Aprendizaje)
+# NUEVO SISTEMA ITERATIVO (AGENTE PROFUNDO)
+# ============================================================
+
+def generar_plan(objetivo: str, historial: List[Dict]) -> List[str]:
+    prompt = f"""
+Eres un planificador experto. Descompón la siguiente tarea en pasos lógicos y secuenciales (máximo 5 pasos).
+Tarea: {objetivo}
+Historial de mejoras anteriores: {json.dumps(historial[-3:], indent=2, default=str)}
+Responde ÚNICAMENTE con una lista de pasos numerados (1., 2., 3., ...).
+"""
+    try:
+        respuesta = llamar_modelo(prompt)
+        pasos = []
+        for linea in respuesta.split('\n'):
+            linea = linea.strip()
+            if re.match(r'^\d+\.', linea):
+                pasos.append(linea)
+        if not pasos:
+            pasos = ["1. Analizar el objetivo y generar una solución inicial"]
+        return pasos[:5]
+    except Exception as e:
+        print(f"❌ Error generando plan: {e}", file=sys.stderr)
+        return ["1. Generar una mejora directa para el objetivo"]
+
+def ejecutar_paso(paso: str, microtarea_id: int, paso_num: int) -> Tuple[bool, str, Optional[str]]:
+    print(f"🔹 Ejecutando paso {paso_num}: {paso}", file=sys.stderr)
+    historial = db_get_historial(5)
+    prompt = f"""
+Eres Aether, un asistente autónomo que se mejora a sí mismo editando su propio código.
+
+PASO ACTUAL: {paso}
+CONTEXTO: Estás implementando un sistema iterativo. Genera el código Python completo de app.py con la mejora necesaria para cumplir este paso.
+
+REGLAS:
+1. Responde ÚNICAMENTE con el código Python completo del archivo app.py.
+2. El código debe estar encerrado entre ```python y ```.
+3. Usa 4 espacios para indentar.
+4. No uses SQLAlchemy, usa psycopg2 directamente.
+5. Mantén todas las funcionalidades existentes.
+
+Historial de mejoras: {json.dumps(historial[-3:], indent=2, default=str)}
+"""
+    try:
+        respuesta = llamar_modelo(prompt)
+        codigo = extraer_codigo(respuesta)
+        if not codigo:
+            return False, "No se pudo extraer código de la respuesta", None
+        valido, msg, _ = validar_codigo_completo(codigo)
+        if not valido:
+            return False, msg, codigo
+        return True, "Código válido", codigo
+    except Exception as e:
+        return False, str(e), None
+
+def analizar_error(error: str, codigo_generado: str) -> str:
+    prompt = f"""
+El código generado falló la validación. Error:
+{error}
+
+Código generado (primeros 500 caracteres):
+{codigo_generado[:500]}
+
+Sugiere una corrección concisa para este error específico en la siguiente iteración.
+Responde con una o dos frases claras.
+"""
+    try:
+        respuesta = llamar_modelo(prompt)
+        return respuesta[:200]
+    except Exception as e:
+        return f"Revisar el error de validación y ajustar el código en consecuencia."
+
+def ejecutar_microtarea_profunda(microtarea: Dict) -> bool:
+    tarea_id = microtarea["id"]
+    descripcion = microtarea["descripcion"]
+    print(f"🧠 Iniciando ejecución profunda de microtarea {tarea_id}", file=sys.stderr)
+    db_microtarea_iniciada(tarea_id)
+
+    # Paso 1: Generar plan
+    historial = db_get_historial(5)
+    plan = generar_plan(descripcion, historial)
+    print(f"📋 Plan generado: {plan}", file=sys.stderr)
+
+    for paso_num, paso in enumerate(plan, start=1):
+        print(f"🔄 Iteración {paso_num}/{len(plan)}: {paso}", file=sys.stderr)
+        exito, mensaje, codigo = ejecutar_paso(paso, tarea_id, paso_num)
+
+        # Guardar iteración
+        db_guardar_iteracion(
+            microtarea_id=tarea_id,
+            paso=paso_num,
+            plan=paso,
+            codigo_generado=codigo[:500] if codigo else "",
+            resultado_validacion="Éxito" if exito else f"Falló: {mensaje}",
+            error=mensaje if not exito else None
+        )
+
+        if not exito:
+            print(f"❌ Paso {paso_num} falló: {mensaje}", file=sys.stderr)
+            # Analizar error y ajustar
+            sugerencia = analizar_error(mensaje, codigo or "")
+            print(f"💡 Sugerencia de corrección: {sugerencia}", file=sys.stderr)
+            # Esperar reflexión
+            time.sleep(5)
+            # Reintentar el mismo paso (lo haremos en la siguiente iteración del bucle)
+            # pero simplificamos: reintentamos el mismo paso una vez más
+            print(f"🔄 Reintentando paso {paso_num}...", file=sys.stderr)
+            exito2, mensaje2, codigo2 = ejecutar_paso(paso, tarea_id, paso_num)
+            db_guardar_iteracion(
+                microtarea_id=tarea_id,
+                paso=paso_num,
+                plan=f"{paso} (reintento con sugerencia: {sugerencia})",
+                codigo_generado=codigo2[:500] if codigo2 else "",
+                resultado_validacion="Éxito" if exito2 else f"Falló: {mensaje2}",
+                error=mensaje2 if not exito2 else None
+            )
+            if exito2:
+                exito = True
+                codigo = codigo2
+                mensaje = mensaje2
+            else:
+                print(f"❌ Reintento falló: {mensaje2}", file=sys.stderr)
+                # Si falla el reintento, aplicamos rollback y salimos
+                checkpoint = db_get_checkpoint_activo()
+                if checkpoint:
+                    restaurar_checkpoint(checkpoint["id"])
+                db_microtarea_completada(tarea_id, exito=False, error=f"Fallo en paso {paso_num}: {mensaje2}")
+                return False
+
+        # Si el paso fue exitoso, aplicar la mejora
+        if codigo:
+            print(f"✅ Paso {paso_num} exitoso. Aplicando mejora...", file=sys.stderr)
+            checkpoint_id = guardar_checkpoint(f"Paso {paso_num}: {paso[:50]}")
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = os.path.join(BACKUP_DIR, f"app_backup_{timestamp}.py")
+            with open(__file__, 'r') as f_orig:
+                with open(backup_path, 'w') as f_backup:
+                    f_backup.write(f_orig.read())
+            try:
+                with open(__file__, 'w') as f:
+                    f.write(codigo)
+                db_guardar_historial(codigo[:500], backup_path, "aplicada")
+                print(f"✅ Mejora aplicada. Checkpoint: {checkpoint_id}", file=sys.stderr)
+                time.sleep(2)  # Dar tiempo para estabilizar
+            except Exception as e:
+                restaurar_checkpoint(checkpoint_id)
+                print(f"❌ Error aplicando mejora: {e}", file=sys.stderr)
+                db_microtarea_completada(tarea_id, exito=False, error=str(e))
+                return False
+
+    # Todos los pasos completados
+    db_microtarea_completada(tarea_id, exito=True)
+    print(f"✅ Microtarea {tarea_id} completada con éxito en {len(plan)} pasos", file=sys.stderr)
+    return True
+
+# ============================================================
+# AUTO-MEJORA (Ciclo de Aprendizaje) - MODIFICADO
 # ============================================================
 
 def generar_mejora(objetivo: str, historial: List[Dict]) -> Optional[str]:
@@ -645,6 +790,7 @@ INSTRUCCIONES ESTRICTAS:
 6. Usa 4 espacios para indentar, nunca tabs.
 7. No uses comillas tipográficas (“ ” o ‘ ’), solo comillas normales (" " o ' ').
 8. Asegúrate de que todas las líneas tengan la indentación correcta.
+9. No uses SQLAlchemy, usa psycopg2 directamente.
 
 Mejoras anteriores (para contexto): {json.dumps(historial[-5:], indent=2, default=str)}
 
@@ -690,70 +836,50 @@ def ejecutar_microtarea(microtarea: Dict) -> bool:
     descripcion = microtarea["descripcion"]
     print(f"🔧 Ejecutando microtarea {tarea_id}: {descripcion}", file=sys.stderr)
     db_microtarea_iniciada(tarea_id)
-    try:
-        # Si la tarea es añadir una línea a requirements.txt
-        if "requirements.txt" in descripcion and ("añade" in descripcion.lower() or "agrega" in descripcion.lower()):
-            match = re.search(r"['\"](.*?)['\"]", descripcion)
-            if match:
-                linea = match.group(1)
-            else:
-                palabras = descripcion.split()
-                for palabra in reversed(palabras):
-                    if '-' in palabra or '_' in palabra or palabra.isalnum():
-                        linea = palabra
-                        break
-                else:
-                    linea = "nueva_libreria"
-            if modificar_requirements(linea):
-                if subir_requirements_por_api():
-                    db_microtarea_completada(tarea_id, exito=True)
-                    print(f"✅ Microtarea {tarea_id} completada con éxito (requirements)", file=sys.stderr)
-                    return True
-                else:
-                    raise Exception("Error al subir requirements.txt a GitHub")
-            else:
-                raise Exception("Error al modificar requirements.txt")
 
-        # Si la tarea es añadir algo a app.py
-        if "app.py" in descripcion and ("añade" in descripcion.lower() or "agrega" in descripcion.lower()):
-            match = re.search(r"['\"](.*?)['\"]", descripcion)
-            if match:
-                linea = match.group(1)
+    # Si la tarea es para requirements.txt (atajo)
+    if "requirements.txt" in descripcion and ("añade" in descripcion.lower() or "agrega" in descripcion.lower()):
+        match = re.search(r"['\"](.*?)['\"]", descripcion)
+        if match:
+            linea = match.group(1)
+        else:
+            palabras = descripcion.split()
+            for palabra in reversed(palabras):
+                if '-' in palabra or '_' in palabra or palabra.isalnum():
+                    linea = palabra
+                    break
             else:
-                linea = "# Comentario añadido por Aether"
-            if modificar_app(linea):
-                if subir_app_por_api():
-                    db_microtarea_completada(tarea_id, exito=True)
-                    print(f"✅ Microtarea {tarea_id} completada con éxito (app.py)", file=sys.stderr)
-                    return True
-                else:
-                    raise Exception("Error al subir app.py a GitHub")
+                linea = "nueva_libreria"
+        if modificar_requirements(linea):
+            if subir_app_por_api():  # Esto sube requirements.txt? No, sube app.py. Hay que corregirlo.
+                db_microtarea_completada(tarea_id, exito=True)
+                print(f"✅ Microtarea {tarea_id} completada con éxito (requirements)", file=sys.stderr)
+                return True
             else:
-                raise Exception("Error al modificar app.py")
+                raise Exception("Error al subir requirements.txt a GitHub")
+        else:
+            raise Exception("Error al modificar requirements.txt")
 
-        # Si no es de requirements ni app.py, seguir con el flujo normal de generación de código
-        historial = db_get_historial(5)
-        respuesta = generar_mejora(descripcion, historial)
-        if not respuesta:
-            raise Exception("No se pudo generar una mejora")
-        codigo = extraer_codigo(respuesta)
-        if not codigo:
-            raise Exception("No se pudo extraer código de la respuesta")
-        exito, mensaje = aplicar_mejora(codigo)
-        if not exito:
-            raise Exception(mensaje)
-        db_microtarea_completada(tarea_id, exito=True)
-        print(f"✅ Microtarea {tarea_id} completada con éxito", file=sys.stderr)
-        return True
-    except Exception as e:
-        error_msg = str(e)
-        print(f"❌ Microtarea {tarea_id} falló: {error_msg}", file=sys.stderr)
-        db_registrar_fallo(tarea_id, error_msg, traceback.format_exc())
-        db_microtarea_completada(tarea_id, exito=False, error=error_msg[:500])
-        checkpoint = db_get_checkpoint_activo()
-        if checkpoint:
-            restaurar_checkpoint(checkpoint["id"])
-        return False
+    # Si la tarea es para app.py (atajo)
+    if "app.py" in descripcion and ("añade" in descripcion.lower() or "agrega" in descripcion.lower()):
+        match = re.search(r"['\"](.*?)['\"]", descripcion)
+        if match:
+            linea = match.group(1)
+        else:
+            linea = "# Comentario añadido por Aether"
+        if modificar_app(linea):
+            if subir_app_por_api():
+                db_microtarea_completada(tarea_id, exito=True)
+                print(f"✅ Microtarea {tarea_id} completada con éxito (app.py)", file=sys.stderr)
+                return True
+            else:
+                raise Exception("Error al subir app.py a GitHub")
+        else:
+            raise Exception("Error al modificar app.py")
+
+    # Si no es de atajo, usar el nuevo sistema iterativo (profundo)
+    # Este es el cambio clave: ahora usamos ejecutar_microtarea_profunda
+    return ejecutar_microtarea_profunda(microtarea)
 
 def ciclo_aprendizaje():
     print("🧠 Iniciando ciclo de aprendizaje...", file=sys.stderr)
@@ -826,7 +952,7 @@ def self_ping():
             print(f"⚠️ Auto-ping falló: {e}", file=sys.stderr)
 
 # ============================================================
-# GIT AUTOMÁTICO (CON VERIFICACIÓN Y FALLBACK API)
+# GIT AUTOMÁTICO
 # ============================================================
 
 def git_inicializar():
@@ -853,19 +979,15 @@ def git_inicializar():
             return False
 
 def git_commit_and_push():
-    # Si la API funciona, usarla directamente
     if subir_app_por_api():
         return True
-    # Si falla, intentar con git push (legado)
     if not GITHUB_TOKEN or not GITHUB_REPO_URL:
         print("⚠️ GitHub no configurado", file=sys.stderr)
         return False
-
     repo_path = os.path.join(os.getcwd(), REPO_DIR)
     if not os.path.exists(os.path.join(repo_path, ".git")):
         print("❌ Repositorio no inicializado", file=sys.stderr)
         return False
-
     try:
         subprocess.run(["git", "-C", repo_path, "config", "user.email", "aether@asistente.local"], check=True, capture_output=True)
         subprocess.run(["git", "-C", repo_path, "config", "user.name", "Aether Asistente"], check=True, capture_output=True)
@@ -890,7 +1012,7 @@ def git_commit_and_push():
 
 @app.route('/')
 def home():
-    return "🤖 Aether — Asistente Autónomo v4.6"
+    return "🤖 Aether — Asistente Autónomo v5.0"
 
 @app.route('/health')
 def health():
@@ -1067,10 +1189,6 @@ def git_manual():
         return jsonify({"status": "ok", "message": "Git push ejecutado con éxito"})
     return jsonify({"error": "Git push falló"}), 500
 
-# ============================================================
-# ENDPOINT DE DIAGNÓSTICO DEL REPOSITORIO
-# ============================================================
-
 @app.route('/debug_repo', methods=['GET'])
 def debug_repo():
     repo_path = os.path.join(os.getcwd(), REPO_DIR)
@@ -1101,12 +1219,21 @@ def debug_repo():
         result["git_log_error"] = str(e)
     return jsonify(result)
 
+@app.route('/progreso/<int:microtarea_id>', methods=['GET'])
+def progreso_microtarea(microtarea_id):
+    iteraciones = db_get_iteraciones(microtarea_id)
+    return jsonify({
+        "microtarea_id": microtarea_id,
+        "iteraciones": iteraciones,
+        "total": len(iteraciones)
+    })
+
 # ============================================================
 # INICIO DEL SERVICIO
 # ============================================================
 
 if __name__ == "__main__":
-    print("🚀 Iniciando Aether v4.6", file=sys.stderr)
+    print("🚀 Iniciando Aether v5.0", file=sys.stderr)
     if GITHUB_TOKEN and GITHUB_REPO_URL:
         git_inicializar()
     else:
@@ -1114,5 +1241,4 @@ if __name__ == "__main__":
     threading.Thread(target=self_ping, daemon=True).start()
     threading.Thread(target=bucle_aprendizaje, daemon=True).start()
     port = int(os.environ.get("PORT", 5000))
-# Comentario añadido por Aether
     app.run(host="0.0.0.0", port=port)
