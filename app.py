@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Aether — Asistente Autónomo con Auto-mejora Persistente
-Versión: 5.1 (corregida y mejorada)
+Versión: 5.2 (con validación de conexión a BD)
 """
 
 import os
@@ -61,11 +61,11 @@ class CustomJSONEncoder(json.JSONEncoder):
 app.json_encoder = CustomJSONEncoder
 
 # ============================================================
-# CONEXIÓN A POSTGRESQL
+# CONEXIÓN A POSTGRESQL (USANDO DATABASE_URL)
 # ============================================================
 
 def get_db_connection():
-    """Retorna una conexión a PostgreSQL usando DATABASE_URL."""
+    """Retorna una conexión a PostgreSQL usando DATABASE_URL (NUNCA localhost)."""
     try:
         conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
         return conn
@@ -525,7 +525,7 @@ def llamar_modelo(pregunta, proveedores_preferidos=None):
     raise Exception(f"Todos los proveedores fallaron. Último error: {ultimo_error}")
 
 # ============================================================
-# VALIDACIÓN DE CÓDIGO
+# VALIDACIÓN DE CÓDIGO (con detección de conexiones locales)
 # ============================================================
 
 def validar_sintaxis(codigo: str) -> Tuple[bool, str]:
@@ -556,6 +556,21 @@ def validar_semantica(codigo: str, timeout: int = 10) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Error en validación semántica: {e}"
 
+def validar_conexion_db(codigo: str) -> Tuple[bool, str]:
+    """
+    Verifica que el código no intente conectar a PostgreSQL con localhost/credenciales fijas.
+    Busca patrones como 'host="localhost"' o 'host=''localhost''' en llamadas a psycopg2.connect.
+    """
+    # Buscar llamadas a psycopg2.connect que contengan 'host' con 'localhost' o '127.0.0.1'
+    patron = r"psycopg2\.connect\s*\([^)]*host\s*=\s*['\"](?:localhost|127\.0\.0\.1)['\"][^)]*\)"
+    if re.search(patron, codigo, re.DOTALL | re.IGNORECASE):
+        return False, "El código contiene una conexión a PostgreSQL con 'localhost' o '127.0.0.1'. Debes usar DATABASE_URL."
+    # También buscar 'host="localhost"' sin psycopg2 directamente (por si acaso)
+    if re.search(r"host\s*=\s*['\"](?:localhost|127\.0\.0\.1)['\"]", codigo, re.IGNORECASE):
+        # Asegurarse de que no sea un comentario o cadena literal (lo hacemos simple)
+        return False, "El código contiene una referencia a 'localhost' en una conexión. Usa DATABASE_URL."
+    return True, "Conexión a BD válida (usa DATABASE_URL)"
+
 def validar_codigo_completo(codigo: str) -> Tuple[bool, str, Optional[str]]:
     sintaxis_ok, sintaxis_msg = validar_sintaxis(codigo)
     if not sintaxis_ok:
@@ -563,6 +578,10 @@ def validar_codigo_completo(codigo: str) -> Tuple[bool, str, Optional[str]]:
     semantica_ok, semantica_msg = validar_semantica(codigo)
     if not semantica_ok:
         return False, semantica_msg, None
+    # Nueva validación: conexión a BD
+    db_ok, db_msg = validar_conexion_db(codigo)
+    if not db_ok:
+        return False, db_msg, None
     return True, "Código válido", None
 
 # ============================================================
@@ -674,7 +693,7 @@ def restaurar_checkpoint(checkpoint_id: int = None) -> bool:
     return True
 
 # ============================================================
-# SISTEMA ITERATIVO (AGENTE PROFUNDO)
+# SISTEMA ITERATIVO (AGENTE PROFUNDO) - CON PROMPT MEJORADO
 # ============================================================
 
 def generar_plan(objetivo: str, historial: List[Dict]) -> List[str]:
@@ -713,6 +732,7 @@ REGLAS:
 3. Usa 4 espacios para indentar.
 4. No uses SQLAlchemy, usa psycopg2 directamente.
 5. Mantén todas las funcionalidades existentes.
+6. **IMPORTANTE: La conexión a la base de datos ya está configurada mediante la variable de entorno DATABASE_URL. NO uses 'localhost' ni credenciales fijas (usuario, contraseña). La función get_db_connection() ya está correctamente definida y no debe ser modificada.**
 
 Historial de mejoras: {json.dumps(historial[-3:], indent=2, default=str)}
 """
@@ -797,6 +817,12 @@ def ejecutar_microtarea_profunda(microtarea: Dict) -> bool:
 
         if codigo:
             print(f"✅ Paso {paso_num} exitoso. Aplicando mejora...", file=sys.stderr)
+            # Antes de aplicar, validamos de nuevo (ya se hizo en ejecutar_paso, pero por si acaso)
+            valido, msg, _ = validar_codigo_completo(codigo)
+            if not valido:
+                print(f"❌ El código generado no es válido después de todo: {msg}", file=sys.stderr)
+                db_microtarea_completada(tarea_id, exito=False, error=f"Validación post-ejecución falló: {msg}")
+                return False
             checkpoint_id = guardar_checkpoint(f"Paso {paso_num}: {paso[:50]}")
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             backup_path = os.path.join(BACKUP_DIR, f"app_backup_{timestamp}.py")
@@ -839,6 +865,7 @@ INSTRUCCIONES ESTRICTAS:
 7. No uses comillas tipográficas (“ ” o ‘ ’), solo comillas normales (" " o ' ').
 8. Asegúrate de que todas las líneas tengan la indentación correcta.
 9. No uses SQLAlchemy, usa psycopg2 directamente.
+10. **La conexión a la base de datos usa DATABASE_URL, nunca localhost.**
 
 Mejoras anteriores (para contexto): {json.dumps(historial[-5:], indent=2, default=str)}
 
@@ -950,6 +977,7 @@ No hay tareas específicas. Sugiere UNA mejora pequeña y segura.
 Contexto de memoria reciente: {json.dumps(memoria, indent=2, default=str)}
 Mejoras anteriores: {json.dumps(historial, indent=2, default=str)}
 La mejora debe ser incremental, segura y útil.
+Recuerda: la conexión a BD usa DATABASE_URL, nunca localhost.
 Responde con el código Python completo modificado.
 """
     try:
@@ -1057,7 +1085,7 @@ def git_commit_and_push():
 
 @app.route('/')
 def home():
-    return "🤖 Aether — Asistente Autónomo v5.1 (corregido)"
+    return "🤖 Aether — Asistente Autónomo v5.2 (con validación de BD)"
 
 @app.route('/health')
 def health():
@@ -1278,7 +1306,7 @@ def progreso_microtarea(microtarea_id):
 # ============================================================
 
 if __name__ == "__main__":
-    print("🚀 Iniciando Aether v5.1 (corregido)", file=sys.stderr)
+    print("🚀 Iniciando Aether v5.2 (con validación de BD)", file=sys.stderr)
     if GITHUB_TOKEN and GITHUB_REPO_URL:
         git_inicializar()
     else:
