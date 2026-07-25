@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Aether — Asistente Autónomo con Auto-mejora Persistente
-Versión: 5.0 (con sistema iterativo profundo)
+Versión: 5.1 (corregida y mejorada)
 """
 
 import os
@@ -31,12 +31,12 @@ from psycopg2.extras import RealDictCursor
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL no configurada.")
+    raise RuntimeError("❌ DATABASE_URL no configurada. El sistema no puede funcionar sin base de datos.")
 
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO_URL = os.environ.get("GITHUB_REPO_URL")
 
-INTERVALO_APRENDIZAJE = 600
+INTERVALO_APRENDIZAJE = 600          # segundos entre ciclos
 BACKUP_DIR = "backups"
 REPO_DIR = "repo"
 
@@ -65,9 +65,16 @@ app.json_encoder = CustomJSONEncoder
 # ============================================================
 
 def get_db_connection():
-    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    """Retorna una conexión a PostgreSQL usando DATABASE_URL."""
+    try:
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        return conn
+    except Exception as e:
+        print(f"❌ Error conectando a la base de datos: {e}", file=sys.stderr)
+        raise
 
 def init_db():
+    """Crea todas las tablas necesarias si no existen."""
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -147,7 +154,6 @@ def init_db():
             prioridad INTEGER DEFAULT 0
         )
     """)
-    # NUEVA TABLA: iteraciones
     cur.execute("""
         CREATE TABLE IF NOT EXISTS iteraciones (
             id SERIAL PRIMARY KEY,
@@ -163,12 +169,13 @@ def init_db():
     conn.commit()
     cur.close()
     conn.close()
-    print("✅ Base de datos inicializada", file=sys.stderr)
+    print("✅ Base de datos inicializada correctamente", file=sys.stderr)
 
+# Inicializar la base de datos al arrancar
 init_db()
 
 # ============================================================
-# FUNCIONES DE BASE DE DATOS (existentes)
+# FUNCIONES DE BASE DE DATOS
 # ============================================================
 
 def db_get_tareas(estado=None):
@@ -348,10 +355,6 @@ def db_get_memoria_episodica(limit=10):
     conn.close()
     return result
 
-# ============================================================
-# FUNCIONES PARA ITERACIONES (NUEVAS)
-# ============================================================
-
 def db_guardar_iteracion(microtarea_id, paso, plan, codigo_generado, resultado_validacion, error=None):
     conn = get_db_connection()
     cur = conn.cursor()
@@ -377,6 +380,7 @@ def db_get_iteraciones(microtarea_id):
 # ============================================================
 
 def get_provider_config():
+    """Lee la configuración de proveedores de la base de datos o variables de entorno."""
     config = db_get_all_config()
     providers = {}
     env_mapping = {
@@ -401,19 +405,47 @@ def get_provider_config():
                     "priority": int(config.get(f"{provider}_priority", 1))
                 }
             elif provider == 'gemini':
-                providers[provider] = {"type": "gemini", "api_key": api_key, "model": config.get(f"{provider}_model", "gemini-3.5-flash"), "priority": int(config.get(f"{provider}_priority", 2))}
+                providers[provider] = {
+                    "type": "gemini",
+                    "api_key": api_key,
+                    "model": config.get(f"{provider}_model", "gemini-1.5-flash"),
+                    "priority": int(config.get(f"{provider}_priority", 2))
+                }
             elif provider == 'deepseek':
-                providers[provider] = {"type": "openai_compatible", "api_key": api_key, "base_url": "https://api.deepseek.com", "model": config.get(f"{provider}_model", "deepseek-v4-flash"), "priority": int(config.get(f"{provider}_priority", 3))}
+                providers[provider] = {
+                    "type": "openai_compatible",
+                    "api_key": api_key,
+                    "base_url": "https://api.deepseek.com",
+                    "model": config.get(f"{provider}_model", "deepseek-chat"),
+                    "priority": int(config.get(f"{provider}_priority", 3))
+                }
             elif provider == 'openai':
-                providers[provider] = {"type": "openai_compatible", "api_key": api_key, "base_url": "https://api.openai.com/v1", "model": config.get(f"{provider}_model", "gpt-4o-mini"), "priority": int(config.get(f"{provider}_priority", 4))}
+                providers[provider] = {
+                    "type": "openai_compatible",
+                    "api_key": api_key,
+                    "base_url": "https://api.openai.com/v1",
+                    "model": config.get(f"{provider}_model", "gpt-4o-mini"),
+                    "priority": int(config.get(f"{provider}_priority", 4))
+                }
             elif provider == 'anthropic':
-                providers[provider] = {"type": "anthropic", "api_key": api_key, "model": config.get(f"{provider}_model", "claude-3-5-haiku-20241022"), "priority": int(config.get(f"{provider}_priority", 5))}
+                providers[provider] = {
+                    "type": "anthropic",
+                    "api_key": api_key,
+                    "model": config.get(f"{provider}_model", "claude-3-haiku-20240307"),
+                    "priority": int(config.get(f"{provider}_priority", 5))
+                }
             elif provider == 'groq':
-                providers[provider] = {"type": "openai_compatible", "api_key": api_key, "base_url": "https://api.groq.com/openai/v1", "model": config.get(f"{provider}_model", "llama-3.3-70b-versatile"), "priority": int(config.get(f"{provider}_priority", 6))}
+                providers[provider] = {
+                    "type": "openai_compatible",
+                    "api_key": api_key,
+                    "base_url": "https://api.groq.com/openai/v1",
+                    "model": config.get(f"{provider}_model", "llama-3.3-70b-versatile"),
+                    "priority": int(config.get(f"{provider}_priority", 6))
+                }
     return providers
 
 # ============================================================
-# LLAMADA A MODELOS
+# LLAMADA A MODELOS (con fallback automático)
 # ============================================================
 
 def _llamar_openrouter(pregunta, provider):
@@ -441,19 +473,27 @@ def _llamar_gemini(pregunta, provider):
 def _llamar_openai_compatible(pregunta, provider):
     from openai import OpenAI
     client = OpenAI(api_key=provider['api_key'], base_url=provider['base_url'])
-    response = client.chat.completions.create(model=provider['model'], messages=[{"role": "user", "content": pregunta}])
+    response = client.chat.completions.create(
+        model=provider['model'],
+        messages=[{"role": "user", "content": pregunta}]
+    )
     return response.choices[0].message.content
 
 def _llamar_anthropic(pregunta, provider):
     from anthropic import Anthropic
     client = Anthropic(api_key=provider['api_key'])
-    response = client.messages.create(model=provider['model'], max_tokens=1024, messages=[{"role": "user", "content": pregunta}])
+    response = client.messages.create(
+        model=provider['model'],
+        max_tokens=1024,
+        messages=[{"role": "user", "content": pregunta}]
+    )
     return response.content[0].text
 
 def llamar_modelo(pregunta, proveedores_preferidos=None):
+    """Llama al modelo con fallback automático entre proveedores."""
     providers = get_provider_config()
     if not providers:
-        raise Exception("No hay proveedores configurados.")
+        raise Exception("No hay proveedores configurados. Asegúrate de tener al menos una API key.")
     if proveedores_preferidos is None:
         proveedores_preferidos = sorted(providers.keys(), key=lambda p: providers[p]['priority'])
     ultimo_error = None
@@ -502,7 +542,10 @@ def validar_semantica(codigo: str, timeout: int = 10) -> Tuple[bool, str]:
             f.write(codigo)
             temp_path = f.name
         try:
-            result = subprocess.run([sys.executable, "-c", f"import sys; sys.path.insert(0, '{os.path.dirname(temp_path)}'); import {os.path.splitext(os.path.basename(temp_path))[0]}"], capture_output=True, text=True, timeout=timeout)
+            result = subprocess.run(
+                [sys.executable, "-c", f"import sys; sys.path.insert(0, '{os.path.dirname(temp_path)}'); import {os.path.splitext(os.path.basename(temp_path))[0]}"],
+                capture_output=True, text=True, timeout=timeout
+            )
             if result.returncode != 0:
                 return False, f"Error de importación:\n{result.stderr}"
             return True, "Código semánticamente válido"
@@ -523,10 +566,11 @@ def validar_codigo_completo(codigo: str) -> Tuple[bool, str, Optional[str]]:
     return True, "Código válido", None
 
 # ============================================================
-# FUNCIONES DE MODIFICACIÓN DIRECTA
+# FUNCIONES DE MODIFICACIÓN DIRECTA Y SUBIDA A GITHUB
 # ============================================================
 
 def modificar_requirements(linea):
+    """Añade una línea a requirements.txt"""
     path = os.path.join(os.getcwd(), "requirements.txt")
     try:
         with open(path, "a") as f:
@@ -538,6 +582,7 @@ def modificar_requirements(linea):
         return False
 
 def modificar_app(linea):
+    """Añade una línea a app.py (justo antes del final)"""
     path = os.path.join(os.getcwd(), "app.py")
     try:
         with open(path, "r") as f:
@@ -554,25 +599,31 @@ def modificar_app(linea):
         print(f"❌ Error al modificar app.py: {e}", file=sys.stderr)
         return False
 
-def subir_app_por_api():
+def subir_archivo_por_api(nombre_archivo: str, ruta_local: str, mensaje_commit: str = None) -> bool:
+    """
+    Sube un archivo a GitHub usando la API.
+    Soporta app.py y requirements.txt.
+    """
     if not GITHUB_TOKEN:
         print("❌ GITHUB_TOKEN no configurado", file=sys.stderr)
         return False
     try:
-        with open(os.path.join(os.getcwd(), "app.py"), "r") as f:
+        with open(ruta_local, "r") as f:
             contenido = f.read()
         contenido_b64 = base64.b64encode(contenido.encode()).decode()
-        api_url = "https://api.github.com/repos/e36xins-ship-it/Mi-Asistente/contents/app.py"
+        # Construir la URL de la API
+        api_url = f"https://api.github.com/repos/e36xins-ship-it/Mi-Asistente/contents/{nombre_archivo}"
         headers = {
             "Authorization": f"token {GITHUB_TOKEN}",
             "Accept": "application/vnd.github.v3+json"
         }
+        # Obtener el SHA actual si existe
         response = requests.get(api_url, headers=headers)
         sha = None
         if response.status_code == 200:
             sha = response.json().get("sha")
         payload = {
-            "message": "Actualización automática de app.py desde Aether",
+            "message": mensaje_commit or f"Actualización automática de {nombre_archivo} desde Aether",
             "content": contenido_b64,
             "branch": "main"
         }
@@ -580,14 +631,20 @@ def subir_app_por_api():
             payload["sha"] = sha
         response = requests.put(api_url, headers=headers, json=payload)
         if response.status_code in [200, 201]:
-            print("✅ app.py actualizado en GitHub mediante API", file=sys.stderr)
+            print(f"✅ {nombre_archivo} actualizado en GitHub mediante API", file=sys.stderr)
             return True
         else:
-            print(f"❌ API de GitHub falló: {response.status_code} - {response.text}", file=sys.stderr)
+            print(f"❌ API de GitHub falló para {nombre_archivo}: {response.status_code} - {response.text}", file=sys.stderr)
             return False
     except Exception as e:
-        print(f"❌ Error subiendo app.py por API: {e}", file=sys.stderr)
+        print(f"❌ Error subiendo {nombre_archivo} por API: {e}", file=sys.stderr)
         return False
+
+def subir_app_por_api():
+    return subir_archivo_por_api("app.py", os.path.join(os.getcwd(), "app.py"), "Actualización automática de app.py desde Aether")
+
+def subir_requirements_por_api():
+    return subir_archivo_por_api("requirements.txt", os.path.join(os.getcwd(), "requirements.txt"), "Actualización automática de requirements.txt desde Aether")
 
 # ============================================================
 # CHECKPOINT Y ROLLBACK
@@ -617,7 +674,7 @@ def restaurar_checkpoint(checkpoint_id: int = None) -> bool:
     return True
 
 # ============================================================
-# NUEVO SISTEMA ITERATIVO (AGENTE PROFUNDO)
+# SISTEMA ITERATIVO (AGENTE PROFUNDO)
 # ============================================================
 
 def generar_plan(objetivo: str, historial: List[Dict]) -> List[str]:
@@ -694,7 +751,6 @@ def ejecutar_microtarea_profunda(microtarea: Dict) -> bool:
     print(f"🧠 Iniciando ejecución profunda de microtarea {tarea_id}", file=sys.stderr)
     db_microtarea_iniciada(tarea_id)
 
-    # Paso 1: Generar plan
     historial = db_get_historial(5)
     plan = generar_plan(descripcion, historial)
     print(f"📋 Plan generado: {plan}", file=sys.stderr)
@@ -703,7 +759,6 @@ def ejecutar_microtarea_profunda(microtarea: Dict) -> bool:
         print(f"🔄 Iteración {paso_num}/{len(plan)}: {paso}", file=sys.stderr)
         exito, mensaje, codigo = ejecutar_paso(paso, tarea_id, paso_num)
 
-        # Guardar iteración
         db_guardar_iteracion(
             microtarea_id=tarea_id,
             paso=paso_num,
@@ -715,13 +770,9 @@ def ejecutar_microtarea_profunda(microtarea: Dict) -> bool:
 
         if not exito:
             print(f"❌ Paso {paso_num} falló: {mensaje}", file=sys.stderr)
-            # Analizar error y ajustar
             sugerencia = analizar_error(mensaje, codigo or "")
             print(f"💡 Sugerencia de corrección: {sugerencia}", file=sys.stderr)
-            # Esperar reflexión
             time.sleep(5)
-            # Reintentar el mismo paso (lo haremos en la siguiente iteración del bucle)
-            # pero simplificamos: reintentamos el mismo paso una vez más
             print(f"🔄 Reintentando paso {paso_num}...", file=sys.stderr)
             exito2, mensaje2, codigo2 = ejecutar_paso(paso, tarea_id, paso_num)
             db_guardar_iteracion(
@@ -738,14 +789,12 @@ def ejecutar_microtarea_profunda(microtarea: Dict) -> bool:
                 mensaje = mensaje2
             else:
                 print(f"❌ Reintento falló: {mensaje2}", file=sys.stderr)
-                # Si falla el reintento, aplicamos rollback y salimos
                 checkpoint = db_get_checkpoint_activo()
                 if checkpoint:
                     restaurar_checkpoint(checkpoint["id"])
                 db_microtarea_completada(tarea_id, exito=False, error=f"Fallo en paso {paso_num}: {mensaje2}")
                 return False
 
-        # Si el paso fue exitoso, aplicar la mejora
         if codigo:
             print(f"✅ Paso {paso_num} exitoso. Aplicando mejora...", file=sys.stderr)
             checkpoint_id = guardar_checkpoint(f"Paso {paso_num}: {paso[:50]}")
@@ -759,20 +808,19 @@ def ejecutar_microtarea_profunda(microtarea: Dict) -> bool:
                     f.write(codigo)
                 db_guardar_historial(codigo[:500], backup_path, "aplicada")
                 print(f"✅ Mejora aplicada. Checkpoint: {checkpoint_id}", file=sys.stderr)
-                time.sleep(2)  # Dar tiempo para estabilizar
+                time.sleep(2)
             except Exception as e:
                 restaurar_checkpoint(checkpoint_id)
                 print(f"❌ Error aplicando mejora: {e}", file=sys.stderr)
                 db_microtarea_completada(tarea_id, exito=False, error=str(e))
                 return False
 
-    # Todos los pasos completados
     db_microtarea_completada(tarea_id, exito=True)
     print(f"✅ Microtarea {tarea_id} completada con éxito en {len(plan)} pasos", file=sys.stderr)
     return True
 
 # ============================================================
-# AUTO-MEJORA (Ciclo de Aprendizaje) - MODIFICADO
+# AUTO-MEJORA (Ciclo de Aprendizaje)
 # ============================================================
 
 def generar_mejora(objetivo: str, historial: List[Dict]) -> Optional[str]:
@@ -837,7 +885,7 @@ def ejecutar_microtarea(microtarea: Dict) -> bool:
     print(f"🔧 Ejecutando microtarea {tarea_id}: {descripcion}", file=sys.stderr)
     db_microtarea_iniciada(tarea_id)
 
-    # Si la tarea es para requirements.txt (atajo)
+    # Detectar si es una tarea de modificación directa
     if "requirements.txt" in descripcion and ("añade" in descripcion.lower() or "agrega" in descripcion.lower()):
         match = re.search(r"['\"](.*?)['\"]", descripcion)
         if match:
@@ -851,16 +899,15 @@ def ejecutar_microtarea(microtarea: Dict) -> bool:
             else:
                 linea = "nueva_libreria"
         if modificar_requirements(linea):
-            if subir_app_por_api():  # Esto sube requirements.txt? No, sube app.py. Hay que corregirlo.
+            if subir_requirements_por_api():
                 db_microtarea_completada(tarea_id, exito=True)
-                print(f"✅ Microtarea {tarea_id} completada con éxito (requirements)", file=sys.stderr)
+                print(f"✅ Microtarea {tarea_id} completada con éxito (requirements.txt)", file=sys.stderr)
                 return True
             else:
                 raise Exception("Error al subir requirements.txt a GitHub")
         else:
             raise Exception("Error al modificar requirements.txt")
 
-    # Si la tarea es para app.py (atajo)
     if "app.py" in descripcion and ("añade" in descripcion.lower() or "agrega" in descripcion.lower()):
         match = re.search(r"['\"](.*?)['\"]", descripcion)
         if match:
@@ -877,8 +924,7 @@ def ejecutar_microtarea(microtarea: Dict) -> bool:
         else:
             raise Exception("Error al modificar app.py")
 
-    # Si no es de atajo, usar el nuevo sistema iterativo (profundo)
-    # Este es el cambio clave: ahora usamos ejecutar_microtarea_profunda
+    # Si no es de atajo, usar el sistema iterativo profundo
     return ejecutar_microtarea_profunda(microtarea)
 
 def ciclo_aprendizaje():
@@ -944,7 +990,7 @@ def bucle_aprendizaje():
 
 def self_ping():
     while True:
-        time.sleep(840)
+        time.sleep(840)  # 14 minutos
         try:
             requests.get(f"http://localhost:{os.environ.get('PORT', 10000)}/health", timeout=5)
             print("🔋 Auto-ping: servicio mantenido activo", file=sys.stderr)
@@ -979,8 +1025,7 @@ def git_inicializar():
             return False
 
 def git_commit_and_push():
-    if subir_app_por_api():
-        return True
+    """Intenta subir los cambios usando git (fallback si la API falla)."""
     if not GITHUB_TOKEN or not GITHUB_REPO_URL:
         print("⚠️ GitHub no configurado", file=sys.stderr)
         return False
@@ -1012,7 +1057,7 @@ def git_commit_and_push():
 
 @app.route('/')
 def home():
-    return "🤖 Aether — Asistente Autónomo v5.0"
+    return "🤖 Aether — Asistente Autónomo v5.1 (corregido)"
 
 @app.route('/health')
 def health():
@@ -1233,7 +1278,7 @@ def progreso_microtarea(microtarea_id):
 # ============================================================
 
 if __name__ == "__main__":
-    print("🚀 Iniciando Aether v5.0", file=sys.stderr)
+    print("🚀 Iniciando Aether v5.1 (corregido)", file=sys.stderr)
     if GITHUB_TOKEN and GITHUB_REPO_URL:
         git_inicializar()
     else:
@@ -1241,5 +1286,4 @@ if __name__ == "__main__":
     threading.Thread(target=self_ping, daemon=True).start()
     threading.Thread(target=bucle_aprendizaje, daemon=True).start()
     port = int(os.environ.get("PORT", 5000))
-aplicar_mejora
     app.run(host="0.0.0.0", port=port)
