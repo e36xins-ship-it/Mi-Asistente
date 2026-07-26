@@ -20,48 +20,56 @@ import re
 app = Flask(__name__)
 
 # Conexión a la base de datos
-def get_db_connection():
-    return psycopg2.connect(os.environ['DATABASE_URL'], cursor_factory=DictCursor)
+def get_db_connect():
+    DATABASE_URL = os.environ.get('DATABASE_URL')
+    conn = psycopg2.connect(DATABASE_URL)
+    return conn
 
-# Inicialización de la memoria reciente
-memoria_reciente = deque(maxlen=100)
-
-# Función para agregar elementos a la memoria reciente
-def agregar_elemento(elemento):
-    memoria_reciente.append({
-        'timestamp': datetime.datetime.now(),
-        'elemento': elemento
-    })
+# Función para agregar un elemento a la memoria reciente
+def add_element(element):
+    conn = get_db_connect()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO recent_memory (element, timestamp) VALUES (%s, %s)", (element, datetime.datetime.now()))
+    conn.commit()
+    conn.close()
 
 # Función para obtener la cantidad de elementos en la memoria reciente que contienen una palabra específica
-def contar_elementos_con_palabra(palabra):
-    return sum(1 for elemento in memoria_reciente if palabra in elemento['elemento'])
+def count_elements_with_word(word):
+    conn = get_db_connect()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM recent_memory WHERE element LIKE %s", ('%' + word + '%',))
+    count = cur.fetchone()[0]
+    conn.close()
+    return count
 
-# Función para eliminar elementos de la memoria reciente que contienen una palabra específica
-def eliminar_elementos_con_palabra(palabra):
-    memoria_reciente = deque([elemento for elemento in memoria_reciente if palabra not in elemento['elemento']], maxlen=100)
-    return memoria_reciente
+# Función para eliminar un elemento de la memoria reciente
+def delete_element(element):
+    conn = get_db_connect()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM recent_memory WHERE element = %s", (element,))
+    conn.commit()
+    conn.close()
 
-# Ruta para agregar elementos a la memoria reciente
-@app.route('/agregar', methods=['POST'])
-def agregar():
-    elemento = request.json['elemento']
-    agregar_elemento(elemento)
-    return jsonify({'mensaje': 'Elemento agregado con éxito'})
+# Ruta para agregar un elemento a la memoria reciente
+@app.route('/add_element', methods=['POST'])
+def add_element_route():
+    element = request.json['element']
+    add_element(element)
+    return jsonify({'message': 'Elemento agregado con éxito'})
 
 # Ruta para obtener la cantidad de elementos en la memoria reciente que contienen una palabra específica
-@app.route('/contar', methods=['GET'])
-def contar():
-    palabra = request.args.get('palabra')
-    contador = contar_elementos_con_palabra(palabra)
-    return jsonify({'contador': contador})
+@app.route('/count_elements_with_word', methods=['GET'])
+def count_elements_with_word_route():
+    word = request.args.get('word')
+    count = count_elements_with_word(word)
+    return jsonify({'count': count})
 
-# Ruta para eliminar elementos de la memoria reciente que contienen una palabra específica
-@app.route('/eliminar', methods=['GET'])
-def eliminar():
-    palabra = request.args.get('palabra')
-    memoria_reciente = eliminar_elementos_con_palabra(palabra)
-    return jsonify({'mensaje': 'Elementos eliminados con éxito'})
+# Ruta para eliminar un elemento de la memoria reciente
+@app.route('/delete_element', methods=['DELETE'])
+def delete_element_route():
+    element = request.json['element']
+    delete_element(element)
+    return jsonify({'message': 'Elemento eliminado con éxito'})
 
 if __name__ == '__main__':
     app.run(debug=True)
