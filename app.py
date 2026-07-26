@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Aether — Asistente Autónomo con Auto-mejora Persistente
-Versión: 5.2 (con validación de BD y prioridades ajustadas)
+Versión: 5.2 (con validación de BD, prioridades ajustadas y función ejecutar_microtarea)
 """
 
 import os
@@ -842,11 +842,74 @@ def ejecutar_microtarea_profunda(microtarea: Dict) -> bool:
     return True
 
 # ============================================================
-# AUTO-MEJORA (Ciclo de Aprendizaje) - DESACTIVADO
+# EJECUTAR MICROTAREA (FUNCIÓN PRINCIPAL) - AÑADIDA AQUÍ
 # ============================================================
 
-# NOTA: Hemos desactivado el aprendizaje libre para evitar corrupción de código.
-# Ahora solo se ejecutan microtareas explícitas.
+def ejecutar_microtarea(microtarea: Dict) -> bool:
+    """Función principal para ejecutar una microtarea."""
+    tarea_id = microtarea["id"]
+    descripcion = microtarea["descripcion"]
+    print(f"🔧 Ejecutando microtarea {tarea_id}: {descripcion}", file=sys.stderr)
+    db_microtarea_iniciada(tarea_id)
+
+    # Detectar si es una tarea de modificación directa de requirements.txt
+    if "requirements.txt" in descripcion and ("añade" in descripcion.lower() or "agrega" in descripcion.lower()):
+        match = re.search(r"['\"](.*?)['\"]", descripcion)
+        if match:
+            linea = match.group(1)
+        else:
+            palabras = descripcion.split()
+            for palabra in reversed(palabras):
+                if '-' in palabra or '_' in palabra or palabra.isalnum():
+                    linea = palabra
+                    break
+            else:
+                linea = "nueva_libreria"
+        if modificar_requirements(linea):
+            if subir_requirements_por_api():
+                db_microtarea_completada(tarea_id, exito=True)
+                print(f"✅ Microtarea {tarea_id} completada con éxito (requirements.txt)", file=sys.stderr)
+                return True
+            else:
+                error_msg = "Error al subir requirements.txt a GitHub"
+                db_microtarea_completada(tarea_id, exito=False, error=error_msg)
+                print(f"❌ {error_msg}", file=sys.stderr)
+                return False
+        else:
+            error_msg = "Error al modificar requirements.txt"
+            db_microtarea_completada(tarea_id, exito=False, error=error_msg)
+            print(f"❌ {error_msg}", file=sys.stderr)
+            return False
+
+    # Detectar si es una tarea de modificación directa de app.py
+    if "app.py" in descripcion and ("añade" in descripcion.lower() or "agrega" in descripcion.lower()):
+        match = re.search(r"['\"](.*?)['\"]", descripcion)
+        if match:
+            linea = match.group(1)
+        else:
+            linea = "# Comentario añadido por Aether"
+        if modificar_app(linea):
+            if subir_app_por_api():
+                db_microtarea_completada(tarea_id, exito=True)
+                print(f"✅ Microtarea {tarea_id} completada con éxito (app.py)", file=sys.stderr)
+                return True
+            else:
+                error_msg = "Error al subir app.py a GitHub"
+                db_microtarea_completada(tarea_id, exito=False, error=error_msg)
+                print(f"❌ {error_msg}", file=sys.stderr)
+                return False
+        else:
+            error_msg = "Error al modificar app.py"
+            db_microtarea_completada(tarea_id, exito=False, error=error_msg)
+            print(f"❌ {error_msg}", file=sys.stderr)
+            return False
+
+    # Si no es de atajo, usar el sistema iterativo profundo
+    return ejecutar_microtarea_profunda(microtarea)
+
+# ============================================================
+# AUTO-MEJORA (Ciclo de Aprendizaje) - CON APRENDIZAJE LIBRE DESACTIVADO
+# ============================================================
 
 def ciclo_aprendizaje():
     print("🧠 Iniciando ciclo de aprendizaje...", file=sys.stderr)
@@ -862,7 +925,7 @@ def ciclo_aprendizaje():
         db_add_microtarea(tarea["descripcion"], prioridad=tarea["prioridad"])
         db_marcar_completada(tarea["id"])
         return
-    # NO HACER APRENDIZAJE LIBRE
+    # Aprendizaje libre DESACTIVADO
     print("🧠 No hay tareas pendientes. Aprendizaje libre DESACTIVADO. Esperando nueva microtarea.", file=sys.stderr)
 
 def bucle_aprendizaje():
