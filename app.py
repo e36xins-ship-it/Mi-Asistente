@@ -842,7 +842,7 @@ def ejecutar_microtarea_profunda(microtarea: Dict) -> bool:
     return True
 
 # ============================================================
-# EJECUTAR MICROTAREA (FUNCIÓN PRINCIPAL) - AÑADIDA AQUÍ
+# EJECUTAR MICROTAREA (FUNCIÓN PRINCIPAL)
 # ============================================================
 
 def ejecutar_microtarea(microtarea: Dict) -> bool:
@@ -1248,5 +1248,4 @@ if __name__ == "__main__":
     threading.Thread(target=self_ping, daemon=True).start()
     threading.Thread(target=bucle_aprendizaje, daemon=True).start()
     port = int(os.environ.get("PORT", 5000))
-gkbus
     app.run(host="0.0.0.0", port=port)
