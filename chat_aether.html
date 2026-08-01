@@ -1,82 +1,1266 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Chat con Aether</title>
-    <style>
-        body { font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #f5f5f5; }
-        #chat { height: 400px; overflow-y: auto; border: 1px solid #ccc; padding: 10px; background: white; border-radius: 8px; margin-bottom: 10px; }
-        .user { text-align: right; color: blue; margin: 5px 0; }
-        .assistant { text-align: left; color: green; margin: 5px 0; }
-        #input-area { display: flex; gap: 10px; }
-        #input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ccc; }
-        #send { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 8px; cursor: pointer; }
-        #send:hover { background: #0056b3; }
-        .loading { color: gray; font-style: italic; }
-    </style>
-</head>
-<body>
-    <h1>🤖 Asistente Aether</h1>
-    <div id="chat"></div>
-    <div id="input-area">
-        <input type="text" id="input" placeholder="Escribe tu mensaje...">
-        <button id="send">Enviar</button>
-    </div>
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Aether — Asistente Autónomo con Auto-mejora Persistente
+Versión: 5.2 (con validación de BD, prioridades ajustadas y función ejecutar_microtarea)
+"""
 
-    <script>
-        const API_URL = "https://mi-asistente-1xso.onrender.com/ask";
+import os
+import sys
+import json
+import time
+import ast
+import re
+import shutil
+import subprocess
+import threading
+import tempfile
+import traceback
+import base64
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import requests
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
-        function addMessage(text, sender) {
-            const chat = document.getElementById('chat');
-            const div = document.createElement('div');
-            div.className = sender;
-            div.textContent = text;
-            chat.appendChild(div);
-            chat.scrollTop = chat.scrollHeight;
+# ============================================================
+# CONFIGURACIÓN
+# ============================================================
+
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("❌ DATABASE_URL no configurada. El sistema no puede funcionar sin base de datos.")
+
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+GITHUB_REPO_URL = os.environ.get("GITHUB_REPO_URL")
+
+INTERVALO_APRENDIZAJE = 600          # segundos entre ciclos
+BACKUP_DIR = "backups"
+REPO_DIR = "repo"
+
+os.makedirs(BACKUP_DIR, exist_ok=True)
+os.makedirs(REPO_DIR, exist_ok=True)
+
+# ============================================================
+# APP Y CORS
+# ============================================================
+
+app = Flask(__name__)
+CORS(app)
+
+class CustomJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        if isinstance(obj, RealDictCursor):
+            return dict(obj)
+        return super().default(obj)
+
+app.json_encoder = CustomJSONEncoder
+
+# ============================================================
+# CONEXIÓN A POSTGRESQL (USANDO DATABASE_URL)
+# ============================================================
+
+def get_db_connection():
+    """Retorna una conexión a PostgreSQL usando DATABASE_URL (NUNCA localhost)."""
+    try:
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        return conn
+    except Exception as e:
+        print(f"❌ Error conectando a la base de datos: {e}", file=sys.stderr)
+        raise
+
+def init_db():
+    """Crea todas las tablas necesarias si no existen."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS tareas (
+            id SERIAL PRIMARY KEY,
+            descripcion TEXT NOT NULL,
+            estado TEXT DEFAULT 'pendiente',
+            prioridad INTEGER DEFAULT 0,
+            creada_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completada_en TIMESTAMP,
+            intentos INTEGER DEFAULT 0,
+            ultimo_error TEXT
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS historial (
+            id SERIAL PRIMARY KEY,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            mejora TEXT,
+            backup_path TEXT,
+            estado TEXT DEFAULT 'aplicada'
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS config (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS memoria_episodica (
+            id SERIAL PRIMARY KEY,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            pregunta TEXT,
+            respuesta TEXT,
+            leccion TEXT,
+            exito BOOLEAN DEFAULT TRUE
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS memoria_semantica (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS checkpoints (
+            id SERIAL PRIMARY KEY,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            descripcion TEXT,
+            codigo TEXT,
+            activo BOOLEAN DEFAULT TRUE
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS fallos (
+            id SERIAL PRIMARY KEY,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            tarea_id INTEGER,
+            error TEXT,
+            stack_trace TEXT,
+            resuelto BOOLEAN DEFAULT FALSE
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS microtareas (
+            id SERIAL PRIMARY KEY,
+            descripcion TEXT NOT NULL,
+            estimado_minutos INTEGER DEFAULT 5,
+            estado TEXT DEFAULT 'pendiente',
+            creada_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            iniciada_en TIMESTAMP,
+            completada_en TIMESTAMP,
+            intentos INTEGER DEFAULT 0,
+            ultimo_error TEXT,
+            prioridad INTEGER DEFAULT 0
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS iteraciones (
+            id SERIAL PRIMARY KEY,
+            microtarea_id INTEGER REFERENCES microtareas(id),
+            paso INTEGER,
+            plan TEXT,
+            codigo_generado TEXT,
+            resultado_validacion TEXT,
+            error TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+    print("✅ Base de datos inicializada correctamente", file=sys.stderr)
+
+# Inicializar la base de datos al arrancar
+init_db()
+
+# ============================================================
+# FUNCIONES DE BASE DE DATOS
+# ============================================================
+
+def db_get_tareas(estado=None):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    if estado:
+        cur.execute("SELECT * FROM tareas WHERE estado = %s ORDER BY prioridad DESC, creada_en", (estado,))
+    else:
+        cur.execute("SELECT * FROM tareas ORDER BY prioridad DESC, creada_en")
+    result = cur.fetchall()
+    cur.close()
+    conn.close()
+    return result
+
+def db_add_tarea(descripcion, prioridad=0):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO tareas (descripcion, prioridad) VALUES (%s, %s) RETURNING id", (descripcion, prioridad))
+    tarea_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return tarea_id
+
+def db_marcar_completada(tarea_id, error=None):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    if error:
+        cur.execute("UPDATE tareas SET estado = 'fallida', completada_en = CURRENT_TIMESTAMP, intentos = intentos + 1, ultimo_error = %s WHERE id = %s", (error, tarea_id))
+    else:
+        cur.execute("UPDATE tareas SET estado = 'completada', completada_en = CURRENT_TIMESTAMP WHERE id = %s", (tarea_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def db_get_microtarea_pendiente():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM microtareas WHERE estado = 'pendiente' ORDER BY prioridad DESC, creada_en LIMIT 1")
+    result = cur.fetchone()
+    cur.close()
+    conn.close()
+    return result
+
+def db_add_microtarea(descripcion, estimado_minutos=5, prioridad=0):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO microtareas (descripcion, estimado_minutos, prioridad) VALUES (%s, %s, %s) RETURNING id", (descripcion, estimado_minutos, prioridad))
+    microtarea_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return microtarea_id
+
+def db_microtarea_iniciada(id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE microtareas SET estado = 'en_progreso', iniciada_en = CURRENT_TIMESTAMP, intentos = intentos + 1 WHERE id = %s", (id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def db_microtarea_completada(id, exito=True, error=None):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    if exito:
+        cur.execute("UPDATE microtareas SET estado = 'completada', completada_en = CURRENT_TIMESTAMP WHERE id = %s", (id,))
+    else:
+        cur.execute("UPDATE microtareas SET estado = 'fallida', completada_en = CURRENT_TIMESTAMP, ultimo_error = %s WHERE id = %s", (error, id))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def db_guardar_historial(mejora, backup_path, estado="aplicada"):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO historial (mejora, backup_path, estado) VALUES (%s, %s, %s) RETURNING id", (mejora[:500], backup_path, estado))
+    historial_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return historial_id
+
+def db_get_historial(limit=10):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM historial ORDER BY timestamp DESC LIMIT %s", (limit,))
+    result = cur.fetchall()
+    cur.close()
+    conn.close()
+    return result
+
+def db_get_config(key):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM config WHERE key = %s", (key,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row["value"] if row else None
+
+def db_set_config(key, value):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (key, value))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def db_get_all_config():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT key, value FROM config")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return {row["key"]: row["value"] for row in rows}
+
+def db_guardar_checkpoint(descripcion, codigo):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE checkpoints SET activo = FALSE WHERE activo = TRUE")
+    cur.execute("INSERT INTO checkpoints (descripcion, codigo, activo) VALUES (%s, %s, TRUE) RETURNING id", (descripcion, codigo))
+    checkpoint_id = cur.fetchone()["id"]
+    conn.commit()
+    cur.close()
+    conn.close()
+    return checkpoint_id
+
+def db_get_checkpoint_activo():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM checkpoints WHERE activo = TRUE ORDER BY id DESC LIMIT 1")
+    result = cur.fetchone()
+    cur.close()
+    conn.close()
+    return result
+
+def db_rollback_checkpoint(checkpoint_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT codigo FROM checkpoints WHERE id = %s", (checkpoint_id,))
+    row = cur.fetchone()
+    if not row:
+        cur.close()
+        conn.close()
+        return None
+    codigo = row["codigo"]
+    cur.execute("UPDATE checkpoints SET activo = FALSE WHERE id = %s", (checkpoint_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return codigo
+
+def db_registrar_fallo(tarea_id, error, stack_trace):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO fallos (tarea_id, error, stack_trace) VALUES (%s, %s, %s)", (tarea_id, error[:500], stack_trace[:1000]))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def db_guardar_memoria_episodica(pregunta, respuesta, leccion, exito=True):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO memoria_episodica (pregunta, respuesta, leccion, exito) VALUES (%s, %s, %s, %s)", (pregunta, respuesta[:500], leccion[:500], exito))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def db_get_memoria_episodica(limit=10):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM memoria_episodica ORDER BY timestamp DESC LIMIT %s", (limit,))
+    result = cur.fetchall()
+    cur.close()
+    conn.close()
+    return result
+
+def db_guardar_iteracion(microtarea_id, paso, plan, codigo_generado, resultado_validacion, error=None):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO iteraciones (microtarea_id, paso, plan, codigo_generado, resultado_validacion, error)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """, (microtarea_id, paso, plan, codigo_generado, resultado_validacion, error))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def db_get_iteraciones(microtarea_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM iteraciones WHERE microtarea_id = %s ORDER BY paso", (microtarea_id,))
+    result = cur.fetchall()
+    cur.close()
+    conn.close()
+    return result
+
+# ============================================================
+# GESTIÓN DE PROVEEDORES (CON CEREBRAS PRIORIDAD 1)
+# ============================================================
+
+def get_provider_config():
+    """Lee la configuración de proveedores de la base de datos o variables de entorno."""
+    config = db_get_all_config()
+    providers = {}
+    env_mapping = {
+        'cerebras': 'CEREBRAS_API_KEY',
+        'openrouter': 'OPENROUTER_API_KEY',
+        'gemini': 'GEMINI_API_KEY',
+        'deepseek': 'DEEPSEEK_API_KEY',
+        'openai': 'OPENAI_API_KEY',
+        'anthropic': 'ANTHROPIC_API_KEY',
+        'groq': 'GROQ_API_KEY'
+    }
+    for provider, env_var in env_mapping.items():
+        api_key = config.get(f"{provider}_api_key")
+        if not api_key:
+            api_key = os.environ.get(env_var)
+        if api_key:
+            if provider == 'cerebras':
+                providers[provider] = {
+                    "type": "openai_compatible",
+                    "api_key": api_key,
+                    "base_url": "https://api.cerebras.ai/v1",
+                    "model": config.get(f"{provider}_model", "llama4-scout-8b-16b-instruct"),
+                    "priority": int(config.get(f"{provider}_priority", 1))
+                }
+            elif provider == 'openrouter':
+                providers[provider] = {
+                    "type": "openrouter",
+                    "api_key": api_key,
+                    "base_url": "https://openrouter.ai/api/v1",
+                    "model": config.get(f"{provider}_model", "openrouter/free"),
+                    "priority": int(config.get(f"{provider}_priority", 2))
+                }
+            elif provider == 'gemini':
+                providers[provider] = {
+                    "type": "gemini",
+                    "api_key": api_key,
+                    "model": config.get(f"{provider}_model", "gemini-1.5-flash"),
+                    "priority": int(config.get(f"{provider}_priority", 3))
+                }
+            elif provider == 'deepseek':
+                providers[provider] = {
+                    "type": "openai_compatible",
+                    "api_key": api_key,
+                    "base_url": "https://api.deepseek.com",
+                    "model": config.get(f"{provider}_model", "deepseek-chat"),
+                    "priority": int(config.get(f"{provider}_priority", 4))
+                }
+            elif provider == 'openai':
+                providers[provider] = {
+                    "type": "openai_compatible",
+                    "api_key": api_key,
+                    "base_url": "https://api.openai.com/v1",
+                    "model": config.get(f"{provider}_model", "gpt-4o-mini"),
+                    "priority": int(config.get(f"{provider}_priority", 5))
+                }
+            elif provider == 'anthropic':
+                providers[provider] = {
+                    "type": "anthropic",
+                    "api_key": api_key,
+                    "model": config.get(f"{provider}_model", "claude-3-haiku-20240307"),
+                    "priority": int(config.get(f"{provider}_priority", 6))
+                }
+            elif provider == 'groq':
+                providers[provider] = {
+                    "type": "openai_compatible",
+                    "api_key": api_key,
+                    "base_url": "https://api.groq.com/openai/v1",
+                    "model": config.get(f"{provider}_model", "llama-3.3-70b-versatile"),
+                    "priority": int(config.get(f"{provider}_priority", 7))
+                }
+    return providers
+
+# ============================================================
+# LLAMADA A MODELOS (con fallback automático)
+# ============================================================
+
+def _llamar_openrouter(pregunta, provider):
+    url = f"{provider['base_url']}/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {provider['api_key']}"
+    }
+    payload = {
+        "model": provider['model'],
+        "messages": [{"role": "user", "content": pregunta}]
+    }
+    response = requests.post(url, headers=headers, json=payload, timeout=30)
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"]
+
+def _llamar_gemini(pregunta, provider):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{provider['model']}:generateContent?key={provider['api_key']}"
+    headers = {"Content-Type": "application/json"}
+    payload = {"contents": [{"role": "user", "parts": [{"text": pregunta}]}]}
+    response = requests.post(url, headers=headers, json=payload, timeout=30)
+    response.raise_for_status()
+    return response.json()["candidates"][0]["content"]["parts"][0]["text"]
+
+def _llamar_openai_compatible(pregunta, provider):
+    from openai import OpenAI
+    client = OpenAI(api_key=provider['api_key'], base_url=provider['base_url'])
+    response = client.chat.completions.create(
+        model=provider['model'],
+        messages=[{"role": "user", "content": pregunta}]
+    )
+    return response.choices[0].message.content
+
+def _llamar_anthropic(pregunta, provider):
+    from anthropic import Anthropic
+    client = Anthropic(api_key=provider['api_key'])
+    response = client.messages.create(
+        model=provider['model'],
+        max_tokens=1024,
+        messages=[{"role": "user", "content": pregunta}]
+    )
+    return response.content[0].text
+
+def llamar_modelo(pregunta, proveedores_preferidos=None):
+    """Llama al modelo con fallback automático entre proveedores."""
+    providers = get_provider_config()
+    if not providers:
+        raise Exception("No hay proveedores configurados. Asegúrate de tener al menos una API key.")
+    if proveedores_preferidos is None:
+        proveedores_preferidos = sorted(providers.keys(), key=lambda p: providers[p]['priority'])
+    ultimo_error = None
+    for provider_name in proveedores_preferidos:
+        if provider_name not in providers:
+            continue
+        provider = providers[provider_name]
+        try:
+            print(f"📤 Intentando con {provider_name}...", file=sys.stderr)
+            sys.stderr.flush()
+            if provider['type'] == 'openrouter':
+                respuesta = _llamar_openrouter(pregunta, provider)
+            elif provider['type'] == 'gemini':
+                respuesta = _llamar_gemini(pregunta, provider)
+            elif provider['type'] == 'openai_compatible':
+                respuesta = _llamar_openai_compatible(pregunta, provider)
+            elif provider['type'] == 'anthropic':
+                respuesta = _llamar_anthropic(pregunta, provider)
+            else:
+                continue
+            print(f"✅ {provider_name} respondió con éxito", file=sys.stderr)
+            sys.stderr.flush()
+            return respuesta
+        except Exception as e:
+            print(f"❌ {provider_name} falló: {e}", file=sys.stderr)
+            ultimo_error = e
+            sys.stderr.flush()
+            continue
+    raise Exception(f"Todos los proveedores fallaron. Último error: {ultimo_error}")
+
+# ============================================================
+# VALIDACIÓN DE CÓDIGO (con detección de conexiones locales)
+# ============================================================
+
+def validar_sintaxis(codigo: str) -> Tuple[bool, str]:
+    try:
+        ast.parse(codigo)
+        return True, "Sintaxis válida"
+    except SyntaxError as e:
+        return False, f"Error de sintaxis: {e}"
+
+def validar_semantica(codigo: str, timeout: int = 10) -> Tuple[bool, str]:
+    try:
+        compile(codigo, '<string>', 'exec')
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write(codigo)
+            temp_path = f.name
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", f"import sys; sys.path.insert(0, '{os.path.dirname(temp_path)}'); import {os.path.splitext(os.path.basename(temp_path))[0]}"],
+                capture_output=True, text=True, timeout=timeout
+            )
+            if result.returncode != 0:
+                return False, f"Error de importación:\n{result.stderr}"
+            return True, "Código semánticamente válido"
+        finally:
+            os.unlink(temp_path)
+    except subprocess.TimeoutExpired:
+        return False, f"Tiempo de ejecución excedido ({timeout}s)"
+    except Exception as e:
+        return False, f"Error en validación semántica: {e}"
+
+def validar_conexion_db(codigo: str) -> Tuple[bool, str]:
+    """Verifica que el código no intente conectar a PostgreSQL con localhost/credenciales fijas."""
+    patron = r"psycopg2\.connect\s*\([^)]*host\s*=\s*['\"](?:localhost|127\.0\.0\.1)['\"][^)]*\)"
+    if re.search(patron, codigo, re.DOTALL | re.IGNORECASE):
+        return False, "El código contiene una conexión a PostgreSQL con 'localhost' o '127.0.0.1'. Debes usar DATABASE_URL."
+    if re.search(r"host\s*=\s*['\"](?:localhost|127\.0\.0\.1)['\"]", codigo, re.IGNORECASE):
+        return False, "El código contiene una referencia a 'localhost' en una conexión. Usa DATABASE_URL."
+    return True, "Conexión a BD válida (usa DATABASE_URL)"
+
+def validar_codigo_completo(codigo: str) -> Tuple[bool, str, Optional[str]]:
+    sintaxis_ok, sintaxis_msg = validar_sintaxis(codigo)
+    if not sintaxis_ok:
+        return False, sintaxis_msg, None
+    semantica_ok, semantica_msg = validar_semantica(codigo)
+    if not semantica_ok:
+        return False, semantica_msg, None
+    db_ok, db_msg = validar_conexion_db(codigo)
+    if not db_ok:
+        return False, db_msg, None
+    return True, "Código válido", None
+
+# ============================================================
+# FUNCIÓN EXTRAER CÓDIGO (AÑADIDA AQUÍ)
+# ============================================================
+
+def extraer_codigo(respuesta: str) -> Optional[str]:
+    """Extrae el código Python de la respuesta del modelo (entre bloques ```python ... ```)."""
+    patron = r"```python\n(.*?)```"
+    match = re.search(patron, respuesta, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    # Si no encuentra el bloque, intenta buscar si la respuesta completa es código
+    if "import" in respuesta and "def " in respuesta:
+        return respuesta.strip()
+    return None
+
+# ============================================================
+# FUNCIONES DE MODIFICACIÓN DIRECTA Y SUBIDA A GITHUB
+# ============================================================
+
+def modificar_requirements(linea):
+    """Añade una línea a requirements.txt"""
+    path = os.path.join(os.getcwd(), "requirements.txt")
+    try:
+        with open(path, "a") as f:
+            f.write(f"\n{linea}")
+        print(f"✅ Línea '{linea}' añadida a requirements.txt", file=sys.stderr)
+        return True
+    except Exception as e:
+        print(f"❌ Error al modificar requirements.txt: {e}", file=sys.stderr)
+        return False
+
+def modificar_app(linea):
+    """Añade una línea a app.py (justo antes del final)"""
+    path = os.path.join(os.getcwd(), "app.py")
+    try:
+        with open(path, "r") as f:
+            lineas = f.readlines()
+        if len(lineas) > 1:
+            lineas.insert(-1, f"{linea}\n")
+        else:
+            lineas.append(f"{linea}\n")
+        with open(path, "w") as f:
+            f.writelines(lineas)
+        print(f"✅ Línea '{linea}' añadida a app.py", file=sys.stderr)
+        return True
+    except Exception as e:
+        print(f"❌ Error al modificar app.py: {e}", file=sys.stderr)
+        return False
+
+def subir_archivo_por_api(nombre_archivo: str, ruta_local: str, mensaje_commit: str = None) -> bool:
+    """Sube un archivo a GitHub usando la API."""
+    if not GITHUB_TOKEN:
+        print("❌ GITHUB_TOKEN no configurado", file=sys.stderr)
+        return False
+    try:
+        with open(ruta_local, "r") as f:
+            contenido = f.read()
+        contenido_b64 = base64.b64encode(contenido.encode()).decode()
+        api_url = f"https://api.github.com/repos/e36xins-ship-it/Mi-Asistente/contents/{nombre_archivo}"
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
         }
-
-        async function sendMessage() {
-            const input = document.getElementById('input');
-            const text = input.value.trim();
-            if (!text) return;
-
-            addMessage(text, 'user');
-            input.value = '';
-            addMessage('Pensando...', 'assistant loading');
-
-            try {
-                const response = await fetch(API_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ pregunta: text })
-                });
-                const data = await response.json();
-                // Eliminar el mensaje de "Pensando..."
-                const chat = document.getElementById('chat');
-                const last = chat.lastElementChild;
-                if (last && last.classList.contains('loading')) {
-                    chat.removeChild(last);
-                }
-                if (data.respuesta) {
-                    addMessage(data.respuesta, 'assistant');
-                } else if (data.error) {
-                    addMessage('❌ Error: ' + data.error, 'assistant');
-                } else {
-                    addMessage('❌ Respuesta inesperada del servidor', 'assistant');
-                }
-            } catch (error) {
-                const chat = document.getElementById('chat');
-                const last = chat.lastElementChild;
-                if (last && last.classList.contains('loading')) {
-                    chat.removeChild(last);
-                }
-                addMessage('❌ Error de conexión: ' + error.message, 'assistant');
-            }
+        response = requests.get(api_url, headers=headers)
+        sha = None
+        if response.status_code == 200:
+            sha = response.json().get("sha")
+        payload = {
+            "message": mensaje_commit or f"Actualización automática de {nombre_archivo} desde Aether",
+            "content": contenido_b64,
+            "branch": "main"
         }
+        if sha:
+            payload["sha"] = sha
+        response = requests.put(api_url, headers=headers, json=payload)
+        if response.status_code in [200, 201]:
+            print(f"✅ {nombre_archivo} actualizado en GitHub mediante API", file=sys.stderr)
+            return True
+        else:
+            print(f"❌ API de GitHub falló para {nombre_archivo}: {response.status_code} - {response.text}", file=sys.stderr)
+            return False
+    except Exception as e:
+        print(f"❌ Error subiendo {nombre_archivo} por API: {e}", file=sys.stderr)
+        return False
 
-        document.getElementById('send').addEventListener('click', sendMessage);
-        document.getElementById('input').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') sendMessage();
-        });
-    </script>
-</body>
-</html>
+def subir_app_por_api():
+    return subir_archivo_por_api("app.py", os.path.join(os.getcwd(), "app.py"), "Actualización automática de app.py desde Aether")
+
+def subir_requirements_por_api():
+    return subir_archivo_por_api("requirements.txt", os.path.join(os.getcwd(), "requirements.txt"), "Actualización automática de requirements.txt desde Aether")
+
+# ============================================================
+# CHECKPOINT Y ROLLBACK
+# ============================================================
+
+def guardar_checkpoint(descripcion: str = "") -> int:
+    with open(__file__, 'r') as f:
+        codigo = f.read()
+    return db_guardar_checkpoint(descripcion or f"Checkpoint {datetime.now().isoformat()}", codigo)
+
+def restaurar_checkpoint(checkpoint_id: int = None) -> bool:
+    if checkpoint_id is None:
+        checkpoint = db_get_checkpoint_activo()
+        if not checkpoint:
+            return False
+        checkpoint_id = checkpoint["id"]
+    codigo = db_rollback_checkpoint(checkpoint_id)
+    if codigo is None:
+        return False
+    valido, msg, _ = validar_codigo_completo(codigo)
+    if not valido:
+        print(f"❌ Checkpoint {checkpoint_id} no válido: {msg}", file=sys.stderr)
+        return False
+    with open(__file__, 'w') as f:
+        f.write(codigo)
+    print(f"✅ Restaurado checkpoint {checkpoint_id}", file=sys.stderr)
+    return True
+
+# ============================================================
+# SISTEMA ITERATIVO (AGENTE PROFUNDO) - CON PROMPT MEJORADO
+# ============================================================
+
+def generar_plan(objetivo: str, historial: List[Dict]) -> List[str]:
+    prompt = f"""
+Eres un planificador experto. Descompón la siguiente tarea en pasos lógicos y secuenciales (máximo 5 pasos).
+Tarea: {objetivo}
+Historial de mejoras anteriores: {json.dumps(historial[-3:], indent=2, default=str)}
+Responde ÚNICAMENTE con una lista de pasos numerados (1., 2., 3., ...).
+"""
+    try:
+        respuesta = llamar_modelo(prompt)
+        pasos = []
+        for linea in respuesta.split('\n'):
+            linea = linea.strip()
+            if re.match(r'^\d+\.', linea):
+                pasos.append(linea)
+        if not pasos:
+            pasos = ["1. Analizar el objetivo y generar una solución inicial"]
+        return pasos[:5]
+    except Exception as e:
+        print(f"❌ Error generando plan: {e}", file=sys.stderr)
+        return ["1. Generar una mejora directa para el objetivo"]
+
+def ejecutar_paso(paso: str, microtarea_id: int, paso_num: int) -> Tuple[bool, str, Optional[str]]:
+    print(f"🔹 Ejecutando paso {paso_num}: {paso}", file=sys.stderr)
+    historial = db_get_historial(5)
+    prompt = f"""
+Eres Aether, un asistente autónomo que se mejora a sí mismo editando su propio código.
+
+PASO ACTUAL: {paso}
+CONTEXTO: Estás implementando un sistema iterativo. Genera el código Python completo de app.py con la mejora necesaria para cumplir este paso.
+
+REGLAS:
+1. Responde ÚNICAMENTE con el código Python completo del archivo app.py.
+2. El código debe estar encerrado entre ```python y ```.
+3. Usa 4 espacios para indentar.
+4. No uses SQLAlchemy, usa psycopg2 directamente.
+5. Mantén todas las funcionalidades existentes.
+6. **IMPORTANTE: La conexión a la base de datos ya está configurada mediante la variable de entorno DATABASE_URL. NO uses 'localhost' ni credenciales fijas (usuario, contraseña). La función get_db_connection() ya está correctamente definida y no debe ser modificada.**
+
+Historial de mejoras: {json.dumps(historial[-3:], indent=2, default=str)}
+"""
+    try:
+        respuesta = llamar_modelo(prompt)
+        codigo = extraer_codigo(respuesta)
+        if not codigo:
+            return False, "No se pudo extraer código de la respuesta", None
+        valido, msg, _ = validar_codigo_completo(codigo)
+        if not valido:
+            return False, msg, codigo
+        return True, "Código válido", codigo
+    except Exception as e:
+        return False, str(e), None
+
+def analizar_error(error: str, codigo_generado: str) -> str:
+    prompt = f"""
+El código generado falló la validación. Error:
+{error}
+
+Código generado (primeros 500 caracteres):
+{codigo_generado[:500]}
+
+Sugiere una corrección concisa para este error específico en la siguiente iteración.
+Responde con una o dos frases claras.
+"""
+    try:
+        respuesta = llamar_modelo(prompt)
+        return respuesta[:200]
+    except Exception as e:
+        return f"Revisar el error de validación y ajustar el código en consecuencia."
+
+def ejecutar_microtarea_profunda(microtarea: Dict) -> bool:
+    tarea_id = microtarea["id"]
+    descripcion = microtarea["descripcion"]
+    print(f"🧠 Iniciando ejecución profunda de microtarea {tarea_id}", file=sys.stderr)
+    db_microtarea_iniciada(tarea_id)
+
+    historial = db_get_historial(5)
+    plan = generar_plan(descripcion, historial)
+    print(f"📋 Plan generado: {plan}", file=sys.stderr)
+
+    for paso_num, paso in enumerate(plan, start=1):
+        print(f"🔄 Iteración {paso_num}/{len(plan)}: {paso}", file=sys.stderr)
+        exito, mensaje, codigo = ejecutar_paso(paso, tarea_id, paso_num)
+
+        db_guardar_iteracion(
+            microtarea_id=tarea_id,
+            paso=paso_num,
+            plan=paso,
+            codigo_generado=codigo[:500] if codigo else "",
+            resultado_validacion="Éxito" if exito else f"Falló: {mensaje}",
+            error=mensaje if not exito else None
+        )
+
+        if not exito:
+            print(f"❌ Paso {paso_num} falló: {mensaje}", file=sys.stderr)
+            sugerencia = analizar_error(mensaje, codigo or "")
+            print(f"💡 Sugerencia de corrección: {sugerencia}", file=sys.stderr)
+            time.sleep(5)
+            print(f"🔄 Reintentando paso {paso_num}...", file=sys.stderr)
+            exito2, mensaje2, codigo2 = ejecutar_paso(paso, tarea_id, paso_num)
+            db_guardar_iteracion(
+                microtarea_id=tarea_id,
+                paso=paso_num,
+                plan=f"{paso} (reintento con sugerencia: {sugerencia})",
+                codigo_generado=codigo2[:500] if codigo2 else "",
+                resultado_validacion="Éxito" if exito2 else f"Falló: {mensaje2}",
+                error=mensaje2 if not exito2 else None
+            )
+            if exito2:
+                exito = True
+                codigo = codigo2
+                mensaje = mensaje2
+            else:
+                print(f"❌ Reintento falló: {mensaje2}", file=sys.stderr)
+                checkpoint = db_get_checkpoint_activo()
+                if checkpoint:
+                    restaurar_checkpoint(checkpoint["id"])
+                db_microtarea_completada(tarea_id, exito=False, error=f"Fallo en paso {paso_num}: {mensaje2}")
+                return False
+
+        if codigo:
+            print(f"✅ Paso {paso_num} exitoso. Aplicando mejora...", file=sys.stderr)
+            valido, msg, _ = validar_codigo_completo(codigo)
+            if not valido:
+                print(f"❌ El código generado no es válido después de todo: {msg}", file=sys.stderr)
+                db_microtarea_completada(tarea_id, exito=False, error=f"Validación post-ejecución falló: {msg}")
+                return False
+            checkpoint_id = guardar_checkpoint(f"Paso {paso_num}: {paso[:50]}")
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = os.path.join(BACKUP_DIR, f"app_backup_{timestamp}.py")
+            with open(__file__, 'r') as f_orig:
+                with open(backup_path, 'w') as f_backup:
+                    f_backup.write(f_orig.read())
+            try:
+                with open(__file__, 'w') as f:
+                    f.write(codigo)
+                db_guardar_historial(codigo[:500], backup_path, "aplicada")
+                print(f"✅ Mejora aplicada. Checkpoint: {checkpoint_id}", file=sys.stderr)
+                time.sleep(2)
+            except Exception as e:
+                restaurar_checkpoint(checkpoint_id)
+                print(f"❌ Error aplicando mejora: {e}", file=sys.stderr)
+                db_microtarea_completada(tarea_id, exito=False, error=str(e))
+                return False
+
+    db_microtarea_completada(tarea_id, exito=True)
+    print(f"✅ Microtarea {tarea_id} completada con éxito en {len(plan)} pasos", file=sys.stderr)
+    return True
+
+# ============================================================
+# EJECUTAR MICROTAREA (FUNCIÓN PRINCIPAL)
+# ============================================================
+
+def ejecutar_microtarea(microtarea: Dict) -> bool:
+    """Función principal para ejecutar una microtarea."""
+    tarea_id = microtarea["id"]
+    descripcion = microtarea["descripcion"]
+    print(f"🔧 Ejecutando microtarea {tarea_id}: {descripcion}", file=sys.stderr)
+    db_microtarea_iniciada(tarea_id)
+
+    # Detectar si es una tarea de modificación directa de requirements.txt
+    if "requirements.txt" in descripcion and ("añade" in descripcion.lower() or "agrega" in descripcion.lower()):
+        match = re.search(r"['\"](.*?)['\"]", descripcion)
+        if match:
+            linea = match.group(1)
+        else:
+            palabras = descripcion.split()
+            for palabra in reversed(palabras):
+                if '-' in palabra or '_' in palabra or palabra.isalnum():
+                    linea = palabra
+                    break
+            else:
+                linea = "nueva_libreria"
+        if modificar_requirements(linea):
+            if subir_requirements_por_api():
+                db_microtarea_completada(tarea_id, exito=True)
+                print(f"✅ Microtarea {tarea_id} completada con éxito (requirements.txt)", file=sys.stderr)
+                return True
+            else:
+                error_msg = "Error al subir requirements.txt a GitHub"
+                db_microtarea_completada(tarea_id, exito=False, error=error_msg)
+                print(f"❌ {error_msg}", file=sys.stderr)
+                return False
+        else:
+            error_msg = "Error al modificar requirements.txt"
+            db_microtarea_completada(tarea_id, exito=False, error=error_msg)
+            print(f"❌ {error_msg}", file=sys.stderr)
+            return False
+
+    # Detectar si es una tarea de modificación directa de app.py
+    if "app.py" in descripcion and ("añade" in descripcion.lower() or "agrega" in descripcion.lower()):
+        match = re.search(r"['\"](.*?)['\"]", descripcion)
+        if match:
+            linea = match.group(1)
+        else:
+            linea = "# Comentario añadido por Aether"
+        if modificar_app(linea):
+            if subir_app_por_api():
+                db_microtarea_completada(tarea_id, exito=True)
+                print(f"✅ Microtarea {tarea_id} completada con éxito (app.py)", file=sys.stderr)
+                return True
+            else:
+                error_msg = "Error al subir app.py a GitHub"
+                db_microtarea_completada(tarea_id, exito=False, error=error_msg)
+                print(f"❌ {error_msg}", file=sys.stderr)
+                return False
+        else:
+            error_msg = "Error al modificar app.py"
+            db_microtarea_completada(tarea_id, exito=False, error=error_msg)
+            print(f"❌ {error_msg}", file=sys.stderr)
+            return False
+
+    # Si no es de atajo, usar el sistema iterativo profundo
+    return ejecutar_microtarea_profunda(microtarea)
+
+# ============================================================
+# AUTO-MEJORA (Ciclo de Aprendizaje) - CON APRENDIZAJE LIBRE DESACTIVADO
+# ============================================================
+
+def ciclo_aprendizaje():
+    print("🧠 Iniciando ciclo de aprendizaje...", file=sys.stderr)
+    microtarea = db_get_microtarea_pendiente()
+    if microtarea:
+        print(f"📋 Microtarea pendiente: {microtarea['descripcion']}", file=sys.stderr)
+        ejecutar_microtarea(microtarea)
+        return
+    tareas = db_get_tareas("pendiente")
+    if tareas:
+        tarea = tareas[0]
+        print(f"📋 Tarea pendiente: {tarea['descripcion']}", file=sys.stderr)
+        db_add_microtarea(tarea["descripcion"], prioridad=tarea["prioridad"])
+        db_marcar_completada(tarea["id"])
+        return
+    # Aprendizaje libre DESACTIVADO
+    print("🧠 No hay tareas pendientes. Aprendizaje libre DESACTIVADO. Esperando nueva microtarea.", file=sys.stderr)
+
+def bucle_aprendizaje():
+    print("🔄 Bucle de aprendizaje iniciado.", file=sys.stderr)
+    while True:
+        try:
+            inicio = time.time()
+            ciclo_aprendizaje()
+            try:
+                requests.get(f"http://localhost:{os.environ.get('PORT', 10000)}/health", timeout=5)
+                print("🔋 Ping de mantenimiento enviado", file=sys.stderr)
+            except Exception as e:
+                print(f"❌ Error en ping interno: {e}", file=sys.stderr)
+            tiempo_espera = max(0, INTERVALO_APRENDIZAJE - (time.time() - inicio))
+            print(f"⏳ Próximo ciclo en {tiempo_espera:.0f}s", file=sys.stderr)
+            time.sleep(tiempo_espera)
+        except Exception as e:
+            print(f"❌ Error crítico en bucle: {e}", file=sys.stderr)
+            time.sleep(60)
+
+# ============================================================
+# AUTO-PING
+# ============================================================
+
+def self_ping():
+    while True:
+        time.sleep(840)  # 14 minutos
+        try:
+            requests.get(f"http://localhost:{os.environ.get('PORT', 10000)}/health", timeout=5)
+            print("🔋 Auto-ping: servicio mantenido activo", file=sys.stderr)
+        except Exception as e:
+            print(f"⚠️ Auto-ping falló: {e}", file=sys.stderr)
+
+# ============================================================
+# GIT AUTOMÁTICO
+# ============================================================
+
+def git_inicializar():
+    if not GITHUB_TOKEN or not GITHUB_REPO_URL:
+        print("⚠️ GitHub no configurado", file=sys.stderr)
+        return False
+    repo_path = os.path.join(os.getcwd(), REPO_DIR)
+    if not os.path.exists(os.path.join(repo_path, ".git")):
+        print("📦 Clonando repositorio...", file=sys.stderr)
+        url_con_token = GITHUB_REPO_URL.replace("https://", f"https://{GITHUB_TOKEN}@")
+        try:
+            subprocess.run(["git", "clone", url_con_token, repo_path], check=True, capture_output=True)
+            print("✅ Repositorio clonado", file=sys.stderr)
+            return True
+        except Exception as e:
+            print(f"❌ Error clonando: {e}", file=sys.stderr)
+            return False
+    else:
+        try:
+            subprocess.run(["git", "-C", repo_path, "pull"], check=True, capture_output=True)
+            return True
+        except Exception as e:
+            print(f"❌ Error pull: {e}", file=sys.stderr)
+            return False
+
+def git_commit_and_push():
+    """Intenta subir los cambios usando git (fallback si la API falla)."""
+    if not GITHUB_TOKEN or not GITHUB_REPO_URL:
+        print("⚠️ GitHub no configurado", file=sys.stderr)
+        return False
+    repo_path = os.path.join(os.getcwd(), REPO_DIR)
+    if not os.path.exists(os.path.join(repo_path, ".git")):
+        print("❌ Repositorio no inicializado", file=sys.stderr)
+        return False
+    try:
+        subprocess.run(["git", "-C", repo_path, "config", "user.email", "aether@asistente.local"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", repo_path, "config", "user.name", "Aether Asistente"], check=True, capture_output=True)
+        shutil.copy2(__file__, os.path.join(repo_path, "app.py"))
+        subprocess.run(["git", "-C", repo_path, "add", "."], check=True, capture_output=True)
+        result = subprocess.run(["git", "-C", repo_path, "status", "--porcelain"], check=True, capture_output=True, text=True)
+        if not result.stdout.strip():
+            print("ℹ️ No hay cambios para commitear", file=sys.stderr)
+            return True
+        mensaje = f"Auto-mejora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        subprocess.run(["git", "-C", repo_path, "commit", "-m", mensaje], check=True, capture_output=True)
+        subprocess.run(["git", "-C", repo_path, "push"], check=True, capture_output=True)
+        print("✅ git push exitoso", file=sys.stderr)
+        return True
+    except Exception as e:
+        print(f"❌ Error en git push: {e}", file=sys.stderr)
+        return False
+
+# ============================================================
+# ENDPOINTS DE LA API
+# ============================================================
+
+@app.route('/')
+def home():
+    return "🤖 Aether — Asistente Autónomo v5.2 (con validación de BD)"
+
+@app.route('/health')
+def health():
+    return {"status": "ok", "timestamp": datetime.now().isoformat()}
+
+@app.route('/ask', methods=['POST'])
+def ask():
+    try:
+        data = request.get_json()
+        if not data or 'pregunta' not in data:
+            return jsonify({"error": "Falta pregunta"}), 400
+        pregunta = data['pregunta']
+        respuesta = llamar_modelo(pregunta)
+        return jsonify({"respuesta": respuesta})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/aprender', methods=['POST'])
+def aprender_manual():
+    threading.Thread(target=ciclo_aprendizaje, daemon=True).start()
+    return jsonify({"status": "ok", "message": "Ciclo de aprendizaje iniciado"})
+
+@app.route('/tareas', methods=['GET'])
+def listar_tareas():
+    tareas = db_get_tareas()
+    return jsonify({
+        "pendientes": [t for t in tareas if t['estado'] == 'pendiente'],
+        "completadas": [t for t in tareas if t['estado'] == 'completada'],
+        "fallidas": [t for t in tareas if t['estado'] == 'fallida'],
+        "total": len(tareas)
+    })
+
+@app.route('/tareas', methods=['POST'])
+def crear_tarea():
+    data = request.get_json()
+    if not data or 'descripcion' not in data:
+        return jsonify({"error": "Falta descripción"}), 400
+    tarea_id = db_add_tarea(data['descripcion'], data.get('prioridad', 0))
+    return jsonify({"status": "ok", "id": tarea_id}), 201
+
+@app.route('/microtareas', methods=['GET'])
+def listar_microtareas():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM microtareas ORDER BY prioridad DESC, creada_en")
+    microtareas = cur.fetchall()
+    cur.close()
+    conn.close()
+    return jsonify(microtareas)
+
+@app.route('/microtareas', methods=['POST'])
+def crear_microtarea():
+    data = request.get_json()
+    if not data or 'descripcion' not in data:
+        return jsonify({"error": "Falta descripción"}), 400
+    microtarea_id = db_add_microtarea(data['descripcion'], data.get('estimado_minutos', 5), data.get('prioridad', 0))
+    return jsonify({"status": "ok", "id": microtarea_id}), 201
+
+@app.route('/estado', methods=['GET'])
+def estado_sistema():
+    tareas = db_get_tareas()
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM microtareas")
+    microtareas = cur.fetchall()
+    cur.close()
+    conn.close()
+    historial = db_get_historial(5)
+    checkpoint = db_get_checkpoint_activo()
+    memoria = db_get_memoria_episodica(5)
+    return jsonify({
+        "tareas": {
+            "pendientes": len([t for t in tareas if t['estado'] == 'pendiente']),
+            "completadas": len([t for t in tareas if t['estado'] == 'completada']),
+            "fallidas": len([t for t in tareas if t['estado'] == 'fallida'])
+        },
+        "microtareas": {
+            "pendientes": len([m for m in microtareas if m['estado'] == 'pendiente']),
+            "en_progreso": len([m for m in microtareas if m['estado'] == 'en_progreso']),
+            "completadas": len([m for m in microtareas if m['estado'] == 'completada']),
+            "fallidas": len([m for m in microtareas if m['estado'] == 'fallida'])
+        },
+        "checkpoint_activo": checkpoint["id"] if checkpoint else None,
+        "ultimas_mejoras": historial,
+        "memoria_reciente": memoria
+    })
+
+@app.route('/config', methods=['POST'])
+def configurar_proveedor():
+    data = request.get_json()
+    if not data or 'provider' not in data or 'api_key' not in data:
+        return jsonify({"error": "Falta provider o api_key"}), 400
+    provider = data['provider']
+    api_key = data['api_key']
+    if provider not in ['cerebras', 'gemini', 'deepseek', 'openai', 'anthropic', 'groq', 'openrouter']:
+        return jsonify({"error": "Provider no soportado"}), 400
+    db_set_config(f"{provider}_api_key", api_key)
+    if 'model' in data:
+        db_set_config(f"{provider}_model", data['model'])
+    if 'priority' in data:
+        db_set_config(f"{provider}_priority", str(data['priority']))
+    return jsonify({"status": "ok", "message": f"Clave para {provider} guardada"})
+
+@app.route('/orden', methods=['POST'])
+def recibir_orden():
+    try:
+        data = request.get_json(force=True)
+    except Exception as e:
+        return jsonify({"error": f"Error al leer JSON: {str(e)}"}), 400
+    if not data or 'orden' not in data:
+        return jsonify({"error": "Falta la orden"}), 400
+    orden = data['orden']
+    print(f"📨 Orden recibida: {orden}", file=sys.stderr)
+
+    if orden.startswith("/tarea"):
+        descripcion = orden[7:].strip()
+        if descripcion:
+            tarea_id = db_add_tarea(descripcion)
+            return jsonify({"status": "ok", "message": f"Tarea añadida (ID {tarea_id})"})
+        return jsonify({"error": "Falta descripción"}), 400
+
+    elif orden.startswith("/microtarea"):
+        descripcion = orden[12:].strip()
+        if descripcion:
+            microtarea_id = db_add_microtarea(descripcion)
+            return jsonify({"status": "ok", "message": f"Microtarea añadida (ID {microtarea_id})"})
+        return jsonify({"error": "Falta descripción"}), 400
+
+    elif orden.startswith("/aprender"):
+        threading.Thread(target=ciclo_aprendizaje, daemon=True).start()
+        return jsonify({"status": "ok", "message": "Ciclo de aprendizaje iniciado"})
+
+    elif orden.startswith("/rollback"):
+        checkpoint = db_get_checkpoint_activo()
+        if checkpoint:
+            if restaurar_checkpoint(checkpoint["id"]):
+                return jsonify({"status": "ok", "message": f"Rollback al checkpoint {checkpoint['id']}"})
+        return jsonify({"error": "No hay checkpoint disponible"}), 400
+
+    elif orden.startswith("/config"):
+        parts = orden.split()
+        if len(parts) >= 3:
+            provider = parts[1]
+            api_key = parts[2]
+            db_set_config(f"{provider}_api_key", api_key)
+            if len(parts) >= 4:
+                db_set_config(f"{provider}_model", parts[3])
+            return jsonify({"status": "ok", "message": f"Clave para {provider} guardada"})
+        return jsonify({"error": "Formato: /config <provider> <api_key> [modelo]"}), 400
+
+    elif orden.startswith("/estado"):
+        return estado_sistema()
+
+    elif orden.startswith("/git"):
+        if git_commit_and_push():
+            return jsonify({"status": "ok", "message": "Git push ejecutado con éxito"})
+        return jsonify({"error": "Git push falló"}), 500
+
+    else:
+        return jsonify({"error": "Orden no reconocida"}), 400
+
+@app.route('/rollback', methods=['POST'])
+def rollback_manual():
+    checkpoint = db_get_checkpoint_activo()
+    if not checkpoint:
+        return jsonify({"error": "No hay checkpoint disponible"}), 400
+    if restaurar_checkpoint(checkpoint["id"]):
+        return jsonify({"status": "ok", "message": f"Rollback al checkpoint {checkpoint['id']}"})
+    return jsonify({"error": "Error al restaurar checkpoint"}), 500
+
+@app.route('/git', methods=['POST'])
+def git_manual():
+    if git_commit_and_push():
+        return jsonify({"status": "ok", "message": "Git push ejecutado con éxito"})
+    return jsonify({"error": "Git push falló"}), 500
+
+@app.route('/debug_repo', methods=['GET'])
+def debug_repo():
+    repo_path = os.path.join(os.getcwd(), REPO_DIR)
+    result = {
+        "repo_path": repo_path,
+        "exists": os.path.exists(repo_path),
+        "is_git": os.path.exists(os.path.join(repo_path, ".git")),
+        "git_remote": "",
+        "git_status": "",
+        "git_log": "",
+        "app_py_exists": os.path.exists(os.path.join(repo_path, "app.py")),
+        "requirements_exists": os.path.exists(os.path.join(repo_path, "requirements.txt")),
+    }
+    try:
+        remote = subprocess.run(["git", "-C", repo_path, "remote", "-v"], capture_output=True, text=True, timeout=5)
+        result["git_remote"] = remote.stdout
+    except Exception as e:
+        result["git_remote_error"] = str(e)
+    try:
+        status = subprocess.run(["git", "-C", repo_path, "status", "--porcelain"], capture_output=True, text=True, timeout=5)
+        result["git_status"] = status.stdout
+    except Exception as e:
+        result["git_status_error"] = str(e)
+    try:
+        log = subprocess.run(["git", "-C", repo_path, "log", "--oneline", "-n", "5"], capture_output=True, text=True, timeout=5)
+        result["git_log"] = log.stdout
+    except Exception as e:
+        result["git_log_error"] = str(e)
+    return jsonify(result)
+
+@app.route('/progreso/<int:microtarea_id>', methods=['GET'])
+def progreso_microtarea(microtarea_id):
+    iteraciones = db_get_iteraciones(microtarea_id)
+    return jsonify({
+        "microtarea_id": microtarea_id,
+        "iteraciones": iteraciones,
+        "total": len(iteraciones)
+    })
+
+# ============================================================
+# INICIO DEL SERVICIO
+# ============================================================
+
+if __name__ == "__main__":
+    print("🚀 Iniciando Aether v5.2 (con validación de BD y aprendizaje libre desactivado)", file=sys.stderr)
+    if GITHUB_TOKEN and GITHUB_REPO_URL:
+        git_inicializar()
+    else:
+        print("⚠️ GitHub no configurado", file=sys.stderr)
+    threading.Thread(target=self_ping, daemon=True).start()
+    threading.Thread(target=bucle_aprendizaje, daemon=True).start()
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
