@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Velocímetro GPS</title>
+<style>
+  :root{
+    --bg: #0a0d10;
+    --panel: #12171c;
+    --panel-line: #1e262d;
+    --text-primary: #eef3f6;
+    --text-muted: #6c7a85;
+    --cyan: #3fd0e0;
+    --amber: #ffb454;
+    --red: #ff5f5f;
+    --mono: 'SF Mono', 'Roboto Mono', 'DM Mono', ui-monospace, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color: transparent;}
+  html,body{
+    height:100%; margin:0; background:var(--bg); color:var(--text-primary);
+    font-family:var(--sans);
+    overscroll-behavior:none; user-select:none;
+  }
+  body{
+    display:flex; flex-direction:column;
+    min-height:100vh; min-height:100dvh;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  header{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:18px 20px 6px;
+  }
+  .brand{ font-size:13px; letter-spacing:.14em; text-transform:uppercase; color:var(--text-muted); font-weight:600;}
+  .status{ display:flex; align-items:center; gap:8px; font-family:var(--mono); font-size:12px; color:var(--text-muted);}
+  .dot-wrap{ position:relative; width:12px; height:12px; }
+  .dot{ width:8px; height:8px; border-radius:50%; background:var(--text-muted); position:absolute; top:2px; left:2px; transition:background .2s; }
+  .dot.idle{ background: var(--text-muted); }
+  .dot.waiting{ background: var(--amber); }
+  .dot.live{ background: var(--cyan); }
+  .ring{
+    position:absolute; inset:-6px; border-radius:50%;
+    border:1px solid var(--cyan); opacity:0; pointer-events:none;
+  }
+  .ring.ping{ animation: ping 1s ease-out; }
+  @keyframes ping{
+    0%{ opacity:.9; transform:scale(.4);}
+    100%{ opacity:0; transform:scale(2.6);}
+  }
+
+  main{
+    flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    padding: 10px 20px 0;
+  }
+  .avg-label{
+    font-family:var(--mono); font-size:12px; letter-spacing:.2em; text-transform:uppercase;
+    color:var(--text-muted); margin-bottom:2px;
+  }
+  .avg-value{
+    font-family:var(--mono); font-weight:600; letter-spacing:-.02em;
+    font-size:clamp(64px, 20vw, 108px); line-height:1; color:var(--text-primary);
+    display:flex; align-items:baseline; gap:10px;
+    font-variant-numeric: tabular-nums;
+  }
+  .avg-value span.unit{ font-size:20px; color:var(--text-muted); font-weight:500; }
+
+  .grid{
+    width:100%; max-width:420px; margin-top:34px;
+    display:grid; grid-template-columns:1fr 1fr; gap:1px;
+    background:var(--panel-line); border:1px solid var(--panel-line); border-radius:14px; overflow:hidden;
+  }
+  .cell{
+    background:var(--panel); padding:14px 16px;
+  }
+  .cell .k{ font-family:var(--mono); font-size:10.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--text-muted); margin-bottom:6px;}
+  .cell .v{ font-family:var(--mono); font-size:20px; font-variant-numeric: tabular-nums; }
+  .cell .v small{ font-size:12px; color:var(--text-muted); font-weight:500; margin-left:3px;}
+
+  footer{ padding:20px; padding-bottom: max(20px, env(safe-area-inset-bottom)); }
+  .msg{
+    text-align:center; font-family:var(--mono); font-size:12px; color:var(--amber);
+    min-height:16px; margin-bottom:12px;
+  }
+  button.main{
+    width:100%; border:none; border-radius:16px; padding:20px;
+    font-family:var(--sans); font-size:17px; font-weight:700; letter-spacing:.01em;
+    background:var(--cyan); color:#04191c;
+    transition: transform .08s ease, background .2s;
+  }
+  button.main:active{ transform:scale(.98); }
+  button.main.stop{ background:var(--red); color:#210505; }
+
+  .accuracy-bad .v{ color: var(--amber); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">Velocímetro GPS</div>
+  <div class="status">
+    <span id="statusText">Listo</span>
+    <div class="dot-wrap">
+      <div class="ring" id="ring"></div>
+      <div class="dot idle" id="dot"></div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="avg-label">Velocidad media</div>
+  <div class="avg-value"><span id="avgValue">0.0</span><span class="unit">km/h</span></div>
+
+  <div class="grid">
+    <div class="cell">
+      <div class="k">Velocidad actual</div>
+      <div class="v"><span id="curValue">0.0</span><small>km/h</small></div>
+    </div>
+    <div class="cell">
+      <div class="k">Tiempo</div>
+      <div class="v" id="timeValue">00:00.0</div>
+    </div>
+    <div class="cell">
+      <div class="k">Distancia</div>
+      <div class="v"><span id="distValue">0</span><small>m</small></div>
+    </div>
+    <div class="cell" id="accCell">
+      <div class="k">Precisión GPS</div>
+      <div class="v"><span id="accValue">--</span><small>m</small></div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <div class="msg" id="msg"></div>
+  <button class="main" id="toggleBtn">Iniciar</button>
+</footer>
+
+<script>
+(function(){
+  const els = {
+    avg: document.getElementById('avgValue'),
+    cur: document.getElementById('curValue'),
+    time: document.getElementById('timeValue'),
+    dist: document.getElementById('distValue'),
+    acc: document.getElementById('accValue'),
+    accCell: document.getElementById('accCell'),
+    dot: document.getElementById('dot'),
+    ring: document.getElementById('ring'),
+    statusText: document.getElementById('statusText'),
+    msg: document.getElementById('msg'),
+    btn: document.getElementById('toggleBtn'),
+  };
+
+  const ACCURACY_THRESHOLD_M = 30; // fixes menos precisos que esto no suman a la distancia
+  const UI_REFRESH_MS = 100;       // frecuencia de refresco de pantalla
+
+  let tracking = false;
+  let watchId = null;
+  let uiTimer = null;
+
+  let startPerf = null;      // performance.now() al pulsar Iniciar -> reloj de referencia
+  let lastFix = null;        // {lat, lon, t} del último fix aceptado
+  let totalDistance = 0;     // metros acumulados
+  let currentSpeedKmh = 0;
+  let lastAccuracy = null;
+
+  function haversine(lat1, lon1, lat2, lon2){
+    const R = 6371000;
+    const toRad = d => d * Math.PI / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a = Math.sin(dLat/2)**2 +
+              Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  }
+
+  function fmtTime(sec){
+    const m = Math.floor(sec / 60);
+    const s = sec - m * 60;
+    return String(m).padStart(2,'0') + ':' + s.toFixed(1).padStart(4,'0');
+  }
+
+  function setDot(state){
+    els.dot.className = 'dot ' + state;
+  }
+
+  function pingRing(){
+    els.ring.classList.remove('ping');
+    void els.ring.offsetWidth; // reinicia la animación
+    els.ring.classList.add('ping');
+  }
+
+  function onPosition(pos){
+    const { latitude, longitude, speed, accuracy } = pos.coords;
+    const t = pos.timestamp; // timestamp del propio fix (reloj del dispositivo/GPS)
+
+    lastAccuracy = accuracy;
+    pingRing();
+
+    const accurateEnough = accuracy != null && accuracy <= ACCURACY_THRESHOLD_M;
+    els.accCell.classList.toggle('accuracy-bad', !accurateEnough);
+
+    if (lastFix){
+      const dt = (t - lastFix.t) / 1000;
+      if (dt > 0 && accurateEnough){
+        const d = haversine(lastFix.lat, lastFix.lon, latitude, longitude);
+        // filtra saltos irreales (ruido de GPS) por si acaso
+        const impliedSpeed = d / dt;
+        if (impliedSpeed < 100){ // <360 km/h, descarta outliers absurdos
+          totalDistance += d;
+        }
+      }
+    }
+    lastFix = { lat: latitude, lon: longitude, t };
+
+    // velocidad instantánea: usa la del GPS si el dispositivo la ofrece, si no, la calculada
+    const speedMs = (speed != null && !Number.isNaN(speed)) ? speed : 0;
+    currentSpeedKmh = speedMs * 3.6;
+
+    setDot(accurateEnough ? 'live' : 'waiting');
+    els.statusText.textContent = accurateEnough ? 'Señal buena' : 'Señal débil';
+  }
+
+  function onError(err){
+    let text;
+    switch(err.code){
+      case err.PERMISSION_DENIED: text = 'Permiso de ubicación denegado.'; break;
+      case err.POSITION_UNAVAILABLE: text = 'Posición no disponible.'; break;
+      case err.TIMEOUT: text = 'Tiempo de espera agotado buscando señal GPS.'; break;
+      default: text = 'Error de GPS.';
+    }
+    els.msg.textContent = text;
+    setDot('waiting');
+  }
+
+  function refreshDisplay(){
+    const elapsed = (performance.now() - startPerf) / 1000;
+    const avgKmh = elapsed > 0 ? (totalDistance / elapsed) * 3.6 : 0;
+
+    els.avg.textContent = avgKmh.toFixed(1);
+    els.cur.textContent = currentSpeedKmh.toFixed(1);
+    els.time.textContent = fmtTime(elapsed);
+    els.dist.textContent = totalDistance < 1000
+      ? Math.round(totalDistance)
+      : (totalDistance/1000).toFixed(2) + ' k';
+    els.acc.textContent = lastAccuracy != null ? Math.round(lastAccuracy) : '--';
+  }
+
+  function start(){
+    if (!('geolocation' in navigator)){
+      els.msg.textContent = 'Este dispositivo/navegador no soporta geolocalización.';
+      return;
+    }
+    // reset de estado
+    totalDistance = 0;
+    lastFix = null;
+    currentSpeedKmh = 0;
+    lastAccuracy = null;
+    startPerf = performance.now();
+    els.msg.textContent = '';
+    setDot('waiting');
+    els.statusText.textContent = 'Buscando señal…';
+
+    watchId = navigator.geolocation.watchPosition(onPosition, onError, {
+      enableHighAccuracy: true,
+      maximumAge: 0,
+      timeout: 15000
+    });
+
+    uiTimer = setInterval(refreshDisplay, UI_REFRESH_MS);
+    tracking = true;
+    els.btn.textContent = 'Finalizar';
+    els.btn.classList.add('stop');
+  }
+
+  function stop(){
+    if (watchId != null) navigator.geolocation.clearWatch(watchId);
+    if (uiTimer != null) clearInterval(uiTimer);
+    watchId = null; uiTimer = null;
+    tracking = false;
+    setDot('idle');
+    els.statusText.textContent = 'Detenido';
+    els.btn.textContent = 'Iniciar';
+    els.btn.classList.remove('stop');
+  }
+
+  els.btn.addEventListener('click', () => {
+    tracking ? stop() : start();
+  });
+})();
+</script>
+</body>
+</html>
